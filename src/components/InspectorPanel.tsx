@@ -1,0 +1,421 @@
+import { Icon } from './Icon';
+import { zoneAccent, zoneKindLabel } from '../theme';
+import type { BuildingProps, FacultyProps, RoomProps, SearchItem, TransitRoute } from '../types/map';
+
+interface InspectorPanelProps {
+  faculty: FacultyProps | null;
+  building: BuildingProps | null;
+  room: RoomProps | null;
+  poi: SearchItem | null;
+  facultyBuildings: BuildingProps[];
+  buildingRooms: RoomProps[];
+  transitRoutes: TransitRoute[];
+  activeFloor: number | 'all';
+  xrayEnabled: boolean;
+  onToggleXray: () => void;
+  onSelectBuilding: (b: BuildingProps) => void;
+  onSelectRoom: (r: RoomProps) => void;
+  onSelectFloor: (fl: number | 'all') => void;
+  onResetCampus: () => void;
+  onClearBuilding: () => void;
+  onClearRoom: () => void;
+  onNavigateTo: (target: { kind: 'faculty' | 'building' | 'room' | 'poi'; id: string }) => void;
+  onSetOrigin: (target: { kind: 'faculty' | 'building' | 'room' | 'poi'; id: string }) => void;
+  onClose: () => void;
+}
+
+const POI_KIND_LABEL: Record<string, string> = {
+  bus_stop: 'Bus stop',
+  rail_station: 'Transit station',
+  gate: 'Campus gate',
+  point: 'Map point',
+};
+
+export function InspectorPanel({
+  faculty,
+  building,
+  room,
+  poi,
+  facultyBuildings,
+  buildingRooms,
+  transitRoutes,
+  activeFloor,
+  xrayEnabled,
+  onToggleXray,
+  onSelectBuilding,
+  onSelectRoom,
+  onSelectFloor,
+  onResetCampus,
+  onClearBuilding,
+  onClearRoom,
+  onNavigateTo,
+  onSetOrigin,
+  onClose,
+}: InspectorPanelProps) {
+  if (!faculty && !building && !room && !poi) return null;
+
+  const accent = zoneAccent(faculty?.zone_kind ?? poi?.zone_kind);
+  const actionTarget = room
+    ? { kind: 'room' as const, id: room.id }
+    : building
+      ? { kind: 'building' as const, id: building.id }
+      : poi
+        ? { kind: 'poi' as const, id: poi.id }
+        : { kind: 'faculty' as const, id: faculty!.id };
+
+  const floorsMap = new Map<number, RoomProps[]>();
+  for (const r of buildingRooms) {
+    const arr = floorsMap.get(r.floor) || [];
+    arr.push(r);
+    floorsMap.set(r.floor, arr);
+  }
+  const sortedFloors = Array.from(floorsMap.keys()).sort((a, b) => b - a);
+  const roomsForFloor = activeFloor === 'all' ? buildingRooms : floorsMap.get(activeFloor) ?? [];
+
+  const servingRoutes = poi
+    ? transitRoutes.filter(
+        (tr) =>
+          poi.keywords.toLowerCase().includes(tr.code.toLowerCase()) ||
+          tr.stops.some((s) => Math.hypot(s.coord[0] - poi.center[0], s.coord[1] - poi.center[1]) < 0.0012),
+      )
+    : [];
+
+  const title = room?.name || building?.name || poi?.title || faculty?.name || '';
+  const alt = faculty && building ? faculty.name : faculty?.name_ms;
+  const code = faculty?.code ?? '';
+
+  return (
+    <aside className="inspector m3-panel" aria-label="Place details">
+      <div className="crumbs">
+        <button type="button" className="crumbs__btn" onClick={onResetCampus}>
+          UM
+        </button>
+        {faculty && (
+          <>
+            <span className="crumbs__sep">/</span>
+            <button type="button" className="crumbs__btn" onClick={onClose}>
+              {faculty.code}
+            </button>
+          </>
+        )}
+        {building && (
+          <>
+            <span className="crumbs__sep">/</span>
+            <button type="button" className="crumbs__btn" onClick={onClearBuilding}>
+              {building.name}
+            </button>
+          </>
+        )}
+        {room && (
+          <>
+            <span className="crumbs__sep">/</span>
+            <button type="button" className="crumbs__btn" onClick={onClearRoom}>
+              {room.code}
+            </button>
+          </>
+        )}
+        {poi && (
+          <>
+            <span className="crumbs__sep">/</span>
+            <span>{POI_KIND_LABEL[poi.kind] ?? 'Place'}</span>
+          </>
+        )}
+      </div>
+
+      <div className="inspector__head">
+        <span
+          className="zone-banner__code"
+          style={{ background: accent, width: 'auto', minWidth: 42, height: 42, fontSize: 11.5 }}
+        >
+          {room ? room.code : building ? building.code || 'B' : poi ? <Icon name="pin" size={18} /> : code}
+        </span>
+        <div className="inspector__head-body">
+          <div className="inspector__kind">
+            <span className="m3-tag m3-tag--primary">
+              {room
+                ? room.floor_label
+                : building
+                  ? 'Building'
+                  : poi
+                    ? POI_KIND_LABEL[poi.kind] ?? 'Place'
+                    : zoneKindLabel(faculty?.zone_kind)}
+            </span>
+            {building?.has_rooms && <span className="m3-tag">Indoor rooms</span>}
+          </div>
+          <h2 className="inspector__name">{title}</h2>
+          {alt && alt !== title && <p className="inspector__name-alt">{alt}</p>}
+        </div>
+        <button type="button" className="m3-icon-btn m3-icon-btn--sm" onClick={onClose} aria-label="Close details">
+          <Icon name="close" size={16} />
+        </button>
+      </div>
+
+      <div className="inspector__actions">
+        <button type="button" className="m3-btn m3-btn--filled" onClick={() => onNavigateTo(actionTarget)}>
+          <Icon name="directions" size={16} />
+          Directions
+        </button>
+        <button type="button" className="m3-btn m3-btn--tonal" onClick={() => onSetOrigin(actionTarget)}>
+          <Icon name="pin" size={16} />
+          Set start
+        </button>
+      </div>
+
+      <div className="inspector__scroll m3-scroll">
+        {building?.has_rooms && (
+          <div
+            className="layer-row"
+            style={{ background: 'var(--surface-low)', borderRadius: 14, padding: '8px 12px' }}
+          >
+            <span className="layer-row__label">
+              <Icon name={xrayEnabled ? 'eye' : 'eyeOff'} size={15} />
+              Cutaway shell
+            </span>
+            <label className="m3-switch">
+              <input
+                type="checkbox"
+                checked={xrayEnabled}
+                onChange={onToggleXray}
+                aria-label="Cutaway building shell"
+              />
+              <span className="m3-switch__track" />
+            </label>
+          </div>
+        )}
+
+        {room && (
+          <>
+            <div className="meta-grid">
+              <div className="meta-cell">
+                <div className="meta-cell__label">Room type</div>
+                <div className="meta-cell__value">{room.room_type.replace(/_/g, ' ')}</div>
+              </div>
+              <div className="meta-cell">
+                <div className="meta-cell__label">Capacity</div>
+                <div className="meta-cell__value m3-mono">{room.capacity || '—'}</div>
+              </div>
+              <div className="meta-cell">
+                <div className="meta-cell__label">Floor</div>
+                <div className="meta-cell__value">{room.floor_label}</div>
+              </div>
+              <div className="meta-cell">
+                <div className="meta-cell__label">Source</div>
+                <div className="meta-cell__value">{room.osm_verified ? 'OSM verified' : 'Directory'}</div>
+              </div>
+            </div>
+            <div className="zone-description">
+              <p>
+                {room.building_name}
+                {room.faculty_id ? ` · ${room.faculty_id}` : ''}
+                {room.code ? ` · Room ${room.code}` : ''}
+              </p>
+            </div>
+          </>
+        )}
+
+        {building && (
+          <>
+            <div className="meta-grid">
+              <div className="meta-cell">
+                <div className="meta-cell__label">Levels</div>
+                <div className="meta-cell__value m3-mono">{building.levels}</div>
+              </div>
+              <div className="meta-cell">
+                <div className="meta-cell__label">Height</div>
+                <div className="meta-cell__value m3-mono">{Math.round(building.height)} m</div>
+              </div>
+              <div className="meta-cell">
+                <div className="meta-cell__label">Category</div>
+                <div className="meta-cell__value">{building.category.replace(/_/g, ' ')}</div>
+              </div>
+              <div className="meta-cell">
+                <div className="meta-cell__label">Access</div>
+                <div className="meta-cell__value">{building.wheelchair}</div>
+              </div>
+            </div>
+
+            {building.has_rooms && (
+              <div className="section">
+                <div className="section__title">
+                  <span>Rooms</span>
+                  <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>
+                    {buildingRooms.length}
+                  </span>
+                </div>
+                <div className="floor-strip">
+                  <button
+                    type="button"
+                    className={`floor-chip${activeFloor === 'all' ? ' is-selected' : ''}`}
+                    onClick={() => onSelectFloor('all')}
+                  >
+                    All
+                  </button>
+                  {sortedFloors.map((fl) => (
+                    <button
+                      key={fl}
+                      type="button"
+                      className={`floor-chip${activeFloor === fl ? ' is-selected' : ''}`}
+                      onClick={() => onSelectFloor(fl)}
+                    >
+                      {floorsMap.get(fl)?.[0]?.floor_label || `L${fl}`}
+                    </button>
+                  ))}
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  {roomsForFloor.map((r) => (
+                    <button
+                      key={r.id}
+                      type="button"
+                      className={`room-row${room?.id === r.id ? ' is-selected' : ''}`}
+                      onClick={() => onSelectRoom(r)}
+                    >
+                      <span className="room-row__icon">
+                        <Icon name="door" size={15} />
+                      </span>
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        <span className="m3-listitem__title" style={{ display: 'block' }}>
+                          {r.name}
+                        </span>
+                        <span className="m3-listitem__meta" style={{ display: 'block' }}>
+                          {r.floor_label} · {r.code}
+                        </span>
+                      </span>
+                      <span className="room-row__type">{r.room_type.replace(/_/g, ' ')}</span>
+                    </button>
+                  ))}
+                  {roomsForFloor.length === 0 && <p className="m3-caption">No rooms recorded on this floor.</p>}
+                </div>
+              </div>
+            )}
+
+            {building.website && (
+              <a className="link-inline" href={building.website} target="_blank" rel="noreferrer">
+                <Icon name="external" size={13} />
+                Building page
+              </a>
+            )}
+          </>
+        )}
+
+
+        {faculty && !building && (
+          <>
+            <div className="chip-wrap">
+              {faculty.established && <span className="m3-tag m3-tag--primary">Est. {faculty.established}</span>}
+              {faculty.capacity_stats && <span className="m3-tag">{faculty.capacity_stats}</span>}
+              {faculty.dean_or_office && (
+                <span className="m3-tag">
+                  <Icon name="pin" size={12} />
+                  {faculty.dean_or_office}
+                </span>
+              )}
+            </div>
+
+            {(faculty.description || faculty.history) && (
+              <div className="zone-description">
+                <p>{faculty.description}</p>
+                {faculty.history && faculty.history !== faculty.description && (
+                  <p style={{ marginTop: 8 }}>{faculty.history}</p>
+                )}
+              </div>
+            )}
+
+            {faculty.departments && faculty.departments.length > 0 && (
+              <div className="section">
+                <p className="section__title">Departments</p>
+                <div className="chip-wrap">
+                  {faculty.departments.map((d) => (
+                    <span key={d} className="m3-tag m3-tag--outline">
+                      {d}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {faculty.facilities && faculty.facilities.length > 0 && (
+              <div className="section">
+                <p className="section__title">Facilities</p>
+                <div className="chip-wrap">
+                  {faculty.facilities.map((f) => (
+                    <span key={f} className="m3-tag">
+                      {f}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+              {faculty.website && (
+                <a className="link-inline" href={faculty.website} target="_blank" rel="noreferrer">
+                  <Icon name="external" size={13} />
+                  Official portal
+                </a>
+              )}
+              {faculty.contact_email && <span className="m3-caption">{faculty.contact_email}</span>}
+            </div>
+
+            <div className="section">
+              <p className="section__title">
+                <span>Buildings</span>
+                <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>
+                  {facultyBuildings.length}
+                </span>
+              </p>
+              {facultyBuildings.map((b) => (
+                <button key={b.id} type="button" className="zone-building" onClick={() => onSelectBuilding(b)}>
+                  <span className="room-row__icon">
+                    <Icon name="building" size={15} />
+                  </span>
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    <span className="zone-building__title" style={{ display: 'block' }}>
+                      {b.name}
+                    </span>
+                    <span className="zone-building__meta" style={{ display: 'block' }}>
+                      {b.levels} {b.levels === 1 ? 'level' : 'levels'}
+                      {b.has_rooms ? ' · indoor rooms' : ''}
+                    </span>
+                  </span>
+                  {b.has_rooms && <span className="m3-tag m3-tag--primary">3D</span>}
+                </button>
+              ))}
+              {facultyBuildings.length === 0 && (
+                <p className="m3-caption">No mapped buildings in this zone yet.</p>
+              )}
+            </div>
+          </>
+        )}
+
+        {poi && (
+          <>
+            <div className="zone-description">
+              <p>{poi.subtitle}</p>
+            </div>
+            {servingRoutes.length > 0 && (
+              <div className="section">
+                <p className="section__title">Serving routes</p>
+                {servingRoutes.map((tr) => (
+                  <div key={tr.id} className="zone-building" style={{ cursor: 'default' }}>
+                    <span className="room-row__icon" style={{ background: tr.color, color: '#fff' }}>
+                      <Icon name="bus" size={15} />
+                    </span>
+                    <span style={{ flex: 1, minWidth: 0 }}>
+                      <span className="zone-building__title" style={{ display: 'block' }}>
+                        {tr.code} · {tr.name}
+                      </span>
+                      <span className="zone-building__meta" style={{ display: 'block' }}>
+                        {tr.operator} · every {tr.headway_min} min · {tr.hours}
+                      </span>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+            <p className="m3-caption">Use Directions to plan a trip from here.</p>
+          </>
+        )}
+      </div>
+    </aside>
+  );
+}
