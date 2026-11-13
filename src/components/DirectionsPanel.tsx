@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon, type IconName } from './Icon';
 import type { ComputedRoute, RouteMode, RouteStep, SearchItem } from '../types/map';
 
@@ -12,6 +12,9 @@ interface DirectionsPanelProps {
   stepFree: boolean;
   route: ComputedRoute | null;
   pickTarget: 'origin' | 'destination' | null;
+  hasUserLocation: boolean;
+  locating: boolean;
+  onUseCurrentLocation: () => void;
   onSetOrigin: (item: SearchItem | null) => void;
   onSetDestination: (item: SearchItem | null) => void;
   onSwap: () => void;
@@ -163,6 +166,9 @@ export function DirectionsPanel({
   stepFree,
   route,
   pickTarget,
+  hasUserLocation,
+  locating,
+  onUseCurrentLocation,
   onSetOrigin,
   onSetDestination,
   onSwap,
@@ -203,10 +209,36 @@ export function DirectionsPanel({
     return out;
   }, [items]);
 
+  const [collapsed, setCollapsed] = useState(false);
+  const wasPickingRef = useRef(false);
+
+  useEffect(() => {
+    if (open) setCollapsed(false);
+  }, [open]);
+
+  useEffect(() => {
+    if (pickTarget) {
+      wasPickingRef.current = true;
+      setCollapsed(true);
+    } else if (wasPickingRef.current) {
+      wasPickingRef.current = false;
+      setCollapsed(false);
+    }
+  }, [pickTarget]);
+
   if (!open || navActive) return null;
 
   return (
-    <aside className="directions m3-panel" aria-label="Directions">
+    <aside className={`directions m3-panel${collapsed ? ' is-collapsed' : ''}`} aria-label="Directions">
+      <button
+        type="button"
+        className="sheet-handle"
+        onClick={() => setCollapsed((value) => !value)}
+        aria-label={collapsed ? 'Expand directions' : 'Collapse directions'}
+        aria-expanded={!collapsed}
+      >
+        <span className="sheet-handle__grip" />
+      </button>
       <div className="directions__head">
         <div>
           <p className="m3-title" style={{ fontSize: 19 }}>
@@ -253,6 +285,17 @@ export function DirectionsPanel({
             <span className="m3-switch__track" />
           </label>
         )}
+
+        <button
+          type="button"
+          className="m3-btn m3-btn--tonal m3-btn--sm"
+          onClick={onUseCurrentLocation}
+          disabled={locating}
+          style={{ alignSelf: 'flex-start' }}
+        >
+          <Icon name="locate" size={15} />
+          {locating ? 'Finding your location…' : hasUserLocation ? 'Start from my location' : 'Use current location'}
+        </button>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 7, minWidth: 0 }}>

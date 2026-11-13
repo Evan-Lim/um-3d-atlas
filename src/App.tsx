@@ -10,7 +10,7 @@ import { ZoneBanner } from './components/ZoneBanner';
 import { ZoneDirectoryModal } from './components/ZoneDirectoryModal';
 import { type CameraCommand, UmMapCanvas, type UmContextBundle } from './components/UmMapCanvas';
 import { CampusRouter, distMeters } from './routing/pathfinder';
-import { zoneKindLabel } from './theme';
+import { applyZonePalette, zoneKindLabel } from './theme';
 import type {
   BuildingProps,
   ComputedRoute,
@@ -22,6 +22,7 @@ import type {
   RouteStep,
   SearchItem,
   TransitData,
+  UserLocation,
 } from './types/map';
 
 
@@ -35,11 +36,26 @@ const EMPTY_CONTEXT: UmContextBundle = {
 const EMPTY_TRANSIT: TransitData = { routes: [], geojson: EMPTY_FC };
 const UM_CENTER: [number, number] = [101.6538, 3.1209];
 
+/** Realistic simulation speeds in m/s (walking, campus shuttle, driving). */
+const SIM_SPEED_MPS: Record<RouteMode, number> = { walk: 1.4, bus: 6.5, drive: 9 };
+
 function computeBearing(a: [number, number], b: [number, number]): number {
   const dx = (b[0] - a[0]) * Math.cos((a[1] * Math.PI) / 180);
   const dy = b[1] - a[1];
   if (Math.hypot(dx, dy) < 1e-9) return 0;
   return (Math.atan2(dx, dy) * 180) / Math.PI;
+}
+
+function userLocationItem(location: UserLocation): SearchItem {
+  return {
+    id: 'user-location',
+    kind: 'point',
+    title: 'Current location',
+    subtitle: 'Your device location',
+    keywords: 'current location my location gps here me',
+    center: location.coord,
+    entrance_node: -1,
+  };
 }
 
 function coordsBounds(coords: [number, number][]): [[number, number], [number, number]] | null {
@@ -98,6 +114,9 @@ export function App() {
   const [zoneDirectoryOpen, setZoneDirectoryOpen] = useState(false);
   const [searchFocusSignal, setSearchFocusSignal] = useState(0);
   const [layersOpen, setLayersOpen] = useState(false);
+  const [userLocation, setUserLocation] = useState<UserLocation | null>(null);
+  const [locating, setLocating] = useState(false);
+  const [locationNotice, setLocationNotice] = useState<string | null>(null);
 
   // Directions state: Walk is default (with stepFree disabled by default), Bus 2nd, Drive 3rd
   const [directionsOpen, setDirectionsOpen] = useState(false);
@@ -115,6 +134,60 @@ export function App() {
     setCameraCmd({ ...cmd, seq: camSeqRef.current });
   }, []);
 
+  /**
+   * Ask the browser for a location fix. The site asks once on load and again
+   * only when the visitor explicitly presses "Locate" or "Use current location".
+   */
+  const requestUserLocation = useCallback((announce = false, quiet = false): Promise<UserLocation | null> => {
+    if (typeof navigator === 'undefined' || !('geolocation' in navigator)) {
+      if (announce) setLocationNotice('Location is not supported by this browser.');
+      return Promise.resolve(null);
+    }
+    if (!quiet) setLocating(true);
+    return new Promise<UserLocation | null>((resolve) => {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const location: UserLocation = {
+            coord: [position.coords.longitude, position.coords.latitude],
+            accuracy: Number.isFinite(position.coords.accuracy) ? position.coords.accuracy : 0,
+            timestamp: position.timestamp,
+          };
+          setUserLocation(location);
+          if (!quiet) setLocating(false);
+          setLocationNotice(null);
+          resolve(location);
+        },
+        (error) => {
+          if (!quiet) setLocating(false);
+          if (announce) {
+            setLocationNotice(
+              error.code === 1
+                ? 'Location permission was denied. Enable it in your browser to use this feature.'
+                : 'Could not get a location fix. Check your connection and try again.',
+            );
+          }
+          resolve(null);
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 },
+      );
+    });
+  }, []);
+
+  // Ask for the visitor's location shortly after the map has loaded.
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void requestUserLocation(false, true);
+    }, 800);
+    return () => window.clearTimeout(timer);
+  }, [requestUserLocation]);
+
+  // Location messages are transient.
+  useEffect(() => {
+    if (!locationNotice) return;
+    const timer = window.setTimeout(() => setLocationNotice(null), 7000);
+    return () => window.clearTimeout(timer);
+  }, [locationNotice]);
+
   // Live Google-Maps-style Navigation State
   const [navActive, setNavActive] = useState(false);
   const [navSimulating, setNavSimulating] = useState(false);
@@ -123,6 +196,8 @@ export function App() {
   const [navFollow, setNavFollow] = useState(true);
   const [navProgressM, setNavProgressM] = useState(0);
   const [liveGpsCoord, setLiveGpsCoord] = useState<[number, number] | null>(null);
+  const [liveGpsSpeed, setLiveGpsSpeed] = useState<number | null>(null);
+  const lastGpsSampleRef = useRef<{ coord: [number, number]; time: number } | null>(null);
   const [liveGpsHeading, setLiveGpsHeading] = useState<number | null>(null);
   const [gpsStatus, setGpsStatus] = useState<'idle' | 'watching' | 'error'>('idle');
   const [gpsError, setGpsError] = useState<string | null>(null);
@@ -220,6 +295,8 @@ export function App() {
             pois: { type: 'FeatureCollection', features: poiFeats },
           };
         }
+
+        applyZonePalette(fJson, buJson);
 
         setBoundary(bJson);
         setFacultiesGeo(fJson);
@@ -348,8 +425,7 @@ export function App() {
     if (!navActive || !navSimulating || navPaused || !computedRoute) return;
     if (routeMetrics.totalGeomM <= 0) return;
 
-    // Walking ~1.5 m/s, Bus ~6.5 m/s, Drive ~9 m/s, scaled for pleasant simulated demo at 1x/3x
-    const baseSpeedMps = routeMode === 'drive' ? 11 : routeMode === 'bus' ? 8.5 : 4.2;
+    const baseSpeedMps = SIM_SPEED_MPS[routeMode];
     let lastTs = performance.now();
     let rafId = 0;
 
@@ -378,39 +454,49 @@ export function App() {
     }
     if (!('geolocation' in navigator)) {
       setGpsStatus('error');
-      setGpsError('Device GPS unavailable; switched to Simulated Follow.');
-      setNavSimulating(true);
+      setGpsError('Device GPS is unavailable. Use “Simulate route” to preview the walkthrough.');
       return;
     }
 
     setGpsStatus('watching');
     setGpsError(null);
 
-    // If no valid campus GPS fix arrives within 1.5s, fall back cleanly to Simulated Follow so Start is immediately responsive
+    // Wait for a real fix. We never start the simulation automatically.
     let receivedValidFix = false;
     const fallbackTimer = window.setTimeout(() => {
       if (!receivedValidFix) {
-        setGpsError('Live GPS outside campus / timed out — following route simulation.');
-        setNavSimulating(true);
+        setGpsError('No GPS fix yet. Use “Simulate route” to preview the walkthrough.');
       }
-    }, 1800);
+    }, 6000);
 
     const watchId = navigator.geolocation.watchPosition(
       (pos) => {
         const coord: [number, number] = [pos.coords.longitude, pos.coords.latitude];
         const distFromUm = distMeters(coord, UM_CENTER);
         if (distFromUm > 6500) {
-          // User is currently testing from outside UM campus -> switch to simulated live follow along campus route
-          setGpsError('Current device location is outside UM — switched to Simulated Follow.');
-          setNavSimulating(true);
+          window.clearTimeout(fallbackTimer);
+          setGpsError('You are outside the UM campus. Use “Simulate route” to preview the walkthrough.');
           return;
         }
         receivedValidFix = true;
         window.clearTimeout(fallbackTimer);
+        setGpsError(null);
         setLiveGpsCoord(coord);
         if (typeof pos.coords.heading === 'number' && !Number.isNaN(pos.coords.heading)) {
           setLiveGpsHeading(pos.coords.heading);
         }
+
+        const previousSample = lastGpsSampleRef.current;
+        let speedMps =
+          typeof pos.coords.speed === 'number' && Number.isFinite(pos.coords.speed)
+            ? Math.max(0, pos.coords.speed)
+            : null;
+        if (speedMps === null && previousSample) {
+          const seconds = Math.max(0.8, (pos.timestamp - previousSample.time) / 1000);
+          speedMps = distMeters(coord, previousSample.coord) / seconds;
+        }
+        lastGpsSampleRef.current = { coord, time: pos.timestamp };
+        setLiveGpsSpeed(speedMps === null ? null : Math.min(speedMps, 40));
 
         // Snap progress onto nearest point along computed route
         if (computedRoute && computedRoute.coordinates.length >= 2) {
@@ -429,8 +515,9 @@ export function App() {
       (err) => {
         window.clearTimeout(fallbackTimer);
         setGpsStatus('error');
-        setGpsError(`${err.message} — switched to Simulated Follow.`);
-        setNavSimulating(true);
+        setLiveGpsSpeed(null);
+        lastGpsSampleRef.current = null;
+        setGpsError(`${err.message}. Use “Simulate route” to preview the walkthrough.`);
       },
       { enableHighAccuracy: true, maximumAge: 1500, timeout: 5000 },
     );
@@ -677,6 +764,8 @@ export function App() {
     setNavProgressM(0);
     setLiveGpsCoord(null);
     setLiveGpsHeading(null);
+    setLiveGpsSpeed(null);
+    lastGpsSampleRef.current = null;
     setGpsError(null);
     setNavSimulating(false);
     setNavPaused(false);
@@ -699,6 +788,8 @@ export function App() {
   const handleExitNavigation = useCallback(() => {
     setNavActive(false);
     setNavPaused(false);
+    setLiveGpsSpeed(null);
+    lastGpsSampleRef.current = null;
     setGpsStatus('idle');
     setGpsError(null);
     if (computedRoute && computedRoute.coordinates.length >= 2) {
@@ -771,11 +862,42 @@ export function App() {
     setActiveFloor('all');
   }, []);
 
+  const handleLocate = useCallback(async () => {
+    const location =
+      userLocation && Date.now() - userLocation.timestamp < 120000
+        ? userLocation
+        : (await requestUserLocation(true)) ?? userLocation;
+    if (!location) return;
+    const awayM = distMeters(location.coord, UM_CENTER);
+    if (awayM > 6500) {
+      setLocationNotice(`You are about ${Math.round(awayM / 1000)} km from UM — showing your position.`);
+    }
+    sendCamera({
+      center: location.coord,
+      zoom: location.accuracy > 400 ? 15.2 : location.accuracy > 120 ? 16.2 : 17.4,
+      pitch: 45,
+    });
+  }, [userLocation, requestUserLocation, sendCamera]);
+
+  const handleUseCurrentLocation = useCallback(async () => {
+    const location =
+      userLocation && Date.now() - userLocation.timestamp < 120000
+        ? userLocation
+        : (await requestUserLocation(true)) ?? userLocation;
+    if (!location) return;
+    setOriginItem(userLocationItem(location));
+    setDirectionsOpen(true);
+    setLayersOpen(false);
+    setZoneDirectoryOpen(false);
+    setPickTarget(null);
+  }, [userLocation, requestUserLocation]);
+
   const bannerInfo = useMemo(() => {
     if (navActive || directionsOpen) return null;
     if (activeRoom) {
       return {
         code: activeFaculty?.code ?? 'RM',
+        accent: activeFaculty?.accent,
         title: activeRoom.name,
         subtitle: [activeBuilding?.name, activeFaculty?.name].filter(Boolean).join(' · '),
       };
@@ -783,6 +905,7 @@ export function App() {
     if (activeBuilding) {
       return {
         code: activeFaculty?.code ?? 'BLD',
+        accent: activeFaculty?.accent,
         title: activeBuilding.name,
         subtitle: activeFaculty?.name ?? 'Universiti Malaya',
       };
@@ -790,6 +913,7 @@ export function App() {
     if (activeFaculty) {
       return {
         code: activeFaculty.code,
+        accent: activeFaculty.accent,
         title: activeFaculty.name,
         subtitle: `${zoneKindLabel(activeFaculty.zone_kind)}${
           activeFaculty.established ? ` · Est. ${activeFaculty.established}` : ''
@@ -797,15 +921,28 @@ export function App() {
       };
     }
     if (activePoi) {
-      return { code: undefined, title: activePoi.title, subtitle: activePoi.subtitle };
+      return { code: undefined, accent: undefined, title: activePoi.title, subtitle: activePoi.subtitle };
     }
     return null;
   }, [navActive, directionsOpen, activeRoom, activeBuilding, activeFaculty, activePoi]);
 
   const isMapBusy = directionsOpen || navActive;
+  const showMobileSheet = !navActive && (hasLeftSheet || directionsOpen);
+  const currentSpeedMps =
+    navActive && !liveNavState.arrived
+      ? navSimulating
+        ? navPaused
+          ? 0
+          : SIM_SPEED_MPS[routeMode] * navSimSpeed
+        : liveGpsSpeed ?? 0
+      : 0;
 
   return (
-    <div className={`app-shell${hasLeftSheet || directionsOpen ? ' has-left-sheet' : ''}`}>
+    <div
+      className={`app-shell${hasLeftSheet || directionsOpen ? ' has-left-sheet' : ''}${
+        showMobileSheet ? ' has-mobile-sheet' : ''
+      }`}
+    >
       <UmMapCanvas
         boundary={boundary}
         faculties={facultiesGeo}
@@ -820,6 +957,7 @@ export function App() {
         xrayEnabled={xrayEnabled}
         is3D={is3D}
         visibility={visibility}
+        userLocation={navActive ? null : userLocation}
         route={directionsOpen || navActive ? computedRoute : null}
         originCoord={directionsOpen || navActive ? originItem?.center ?? null : null}
         destCoord={directionsOpen || navActive ? destItem?.center ?? null : null}
@@ -901,11 +1039,11 @@ export function App() {
             </span>
             <span className="rail-item__label">Layers</span>
           </button>
-          <button type="button" className="rail-item" onClick={resetToCampus} aria-label="Reset view">
+          <button type="button" className="rail-item" onClick={handleLocate} aria-label="Find my location" disabled={locating}>
             <span className="rail-item__icon">
-              <Icon name="reset" size={19} />
+              <Icon name="locate" size={19} />
             </span>
-            <span className="rail-item__label">Reset</span>
+            <span className="rail-item__label">{locating ? 'Finding' : 'Locate'}</span>
           </button>
         </div>
         <div className="rail-foot">
@@ -923,6 +1061,16 @@ export function App() {
         </div>
       </nav>
 
+      <button
+        type="button"
+        className="map-locate"
+        onClick={handleLocate}
+        disabled={locating}
+        aria-label="Find my location"
+      >
+        <Icon name="locate" size={19} />
+      </button>
+
       <SearchBar
         items={searchItems}
         directionsOpen={directionsOpen}
@@ -937,6 +1085,7 @@ export function App() {
       {bannerInfo && (
         <ZoneBanner
           code={bannerInfo.code}
+          accent={bannerInfo.accent}
           title={bannerInfo.title}
           subtitle={bannerInfo.subtitle}
           onClose={clearSelection}
@@ -981,6 +1130,9 @@ export function App() {
         stepFree={stepFree}
         route={computedRoute}
         pickTarget={pickTarget}
+        hasUserLocation={Boolean(userLocation)}
+        locating={locating}
+        onUseCurrentLocation={handleUseCurrentLocation}
         onSetOrigin={setOriginItem}
         onSetDestination={setDestItem}
         onSwap={() => {
@@ -1021,6 +1173,7 @@ export function App() {
           gpsStatus={gpsStatus}
           gpsError={gpsError}
           arrived={liveNavState.arrived}
+          speedMps={currentSpeedMps}
           onTogglePause={() => setNavPaused((v) => !v)}
           onToggleSpeed={() => setNavSimSpeed((s) => (s === 1 ? 3 : 1))}
           onToggleSource={() => {
@@ -1117,15 +1270,9 @@ export function App() {
           <Icon name="layers" size={20} />
           Layers
         </button>
-        <button
-          type="button"
-          className={`mobile-bar__item${!is3D ? ' is-active' : ''}`}
-          onClick={() => setIs3D((v) => !v)}
-        >
-          <Icon name="box" size={20} />
-          {is3D ? '3D' : '2D'}
-        </button>
       </nav>
+
+      {locationNotice && <div className="notice-toast">{locationNotice}</div>}
 
       {loading && (
         <div className="loading-screen">

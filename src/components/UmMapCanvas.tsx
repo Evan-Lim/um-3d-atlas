@@ -11,6 +11,7 @@ import type {
   FacultyProps,
   MapLayerVisibility,
   RoomProps,
+  UserLocation,
 } from '../types/map';
 import { zoneAccent } from '../theme';
 
@@ -45,6 +46,7 @@ interface UmMapCanvasProps {
   xrayEnabled: boolean;
   is3D: boolean;
   visibility: MapLayerVisibility;
+  userLocation: UserLocation | null;
   route: ComputedRoute | null;
   originCoord: [number, number] | null;
   destCoord: [number, number] | null;
@@ -65,22 +67,11 @@ interface UmMapCanvasProps {
 const UM_DEFAULT_CENTER: [number, number] = [101.6538, 3.1209];
 
 /**
- * Campus data carries a different colour per zone. The atlas maps those into a
- * single tonal UM-blue family so the map reads as one designed product.
+ * Zone fills and accents are assigned in `theme.ts` before the data reaches
+ * the map, so the border colour always matches the building highlight.
  */
-const ZONE_COLOR_EXPR = [
-  'match',
-  ['get', 'zone_kind'],
-  'college',
-  '#5468b8',
-  'institute',
-  '#3d6c96',
-  'medical',
-  '#5c6fa8',
-  'landmark',
-  '#3a4a72',
-  '#2f5bb7',
-] as unknown as maplibregl.ExpressionSpecification;
+const ZONE_FILL_EXPR = ['coalesce', ['get', 'color'], '#e3e9fb'] as unknown as maplibregl.ExpressionSpecification;
+const ZONE_ACCENT_EXPR = ['coalesce', ['get', 'accent'], '#33549e'] as unknown as maplibregl.ExpressionSpecification;
 
 const FALLBACK_LIGHT_STYLE: StyleSpecification = {
   version: 8,
@@ -98,6 +89,29 @@ const FALLBACK_LIGHT_STYLE: StyleSpecification = {
   ],
 };
 
+
+/** A small geodesic circle used to visualise the GPS accuracy radius. */
+function accuracyPolygon(center: [number, number], accuracy: number): GeoJSON.FeatureCollection {
+  const radius = Math.max(8, Math.min(accuracy > 0 ? accuracy : 25, 400));
+  const points = 48;
+  const latRadius = radius / 110540;
+  const lngRadius = radius / (111320 * Math.cos((center[1] * Math.PI) / 180));
+  const ring: [number, number][] = [];
+  for (let i = 0; i <= points; i += 1) {
+    const angle = (i / points) * Math.PI * 2;
+    ring.push([center[0] + Math.cos(angle) * lngRadius, center[1] + Math.sin(angle) * latRadius]);
+  }
+  return {
+    type: 'FeatureCollection',
+    features: [
+      {
+        type: 'Feature',
+        properties: {},
+        geometry: { type: 'Polygon', coordinates: [ring] },
+      },
+    ],
+  };
+}
 
 function parseProp<T>(val: unknown, fallback: T): T {
   if (typeof val === 'string') {
@@ -140,7 +154,8 @@ function toFacultyProps(raw: Record<string, unknown>): FacultyProps {
     name_ms: String(raw.name_ms ?? ''),
     category: String(raw.category ?? ''),
     zone_kind: zk || undefined,
-    color: String(raw.color ?? '#2f5bb7'),
+    color: String(raw.color ?? '#e3e9fb'),
+    accent: raw.accent ? String(raw.accent) : undefined,
     website: String(raw.website ?? ''),
     center: parseProp<[number, number]>(raw.center, UM_DEFAULT_CENTER),
     zoom: Number(raw.zoom ?? 17.2),
@@ -186,6 +201,7 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
     xrayEnabled,
     is3D,
     visibility,
+    userLocation,
     route,
     originCoord,
     destCoord,
@@ -204,6 +220,7 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
   const originMarkerRef = useRef<maplibregl.Marker | null>(null);
   const destMarkerRef = useRef<maplibregl.Marker | null>(null);
   const liveNavMarkerRef = useRef<maplibregl.Marker | null>(null);
+  const userMarkerRef = useRef<maplibregl.Marker | null>(null);
   const coneElRef = useRef<HTMLDivElement | null>(null);
 
   // Latest state & callbacks in refs so MapLibre event listeners always read fresh values
@@ -231,6 +248,30 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
       })),
     };
   }, [route]);
+
+  const applyUserLocation = (map: maplibregl.Map, location: UserLocation | null) => {
+    const source = map.getSource('um-user-area') as GeoJSONSource | undefined;
+    if (!location) {
+      source?.setData({ type: 'FeatureCollection', features: [] });
+      userMarkerRef.current?.remove();
+      userMarkerRef.current = null;
+      return;
+    }
+
+    source?.setData(accuracyPolygon(location.coord, location.accuracy));
+
+    if (!userMarkerRef.current) {
+      const element = document.createElement('div');
+      element.className = 'user-loc-wrap';
+      element.title = 'Your current location';
+      element.innerHTML = '<span class="user-loc-halo"></span><span class="user-loc-dot"></span>';
+      userMarkerRef.current = new maplibregl.Marker({ element, anchor: 'center' })
+        .setLngLat(location.coord)
+        .addTo(map);
+    } else {
+      userMarkerRef.current.setLngLat(location.coord);
+    }
+  };
 
   // Initialize MapLibre instance
   useEffect(() => {
@@ -307,6 +348,10 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
       map.addSource('um-buildings', { type: 'geojson', data: cur.buildings });
       map.addSource('um-rooms', { type: 'geojson', data: cur.rooms });
       map.addSource('um-pois', { type: 'geojson', data: cur.context.pois });
+      map.addSource('um-user-area', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+      });
       map.addSource('um-route', {
         type: 'geojson',
         data: { type: 'FeatureCollection', features: [] },
@@ -355,14 +400,50 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
         },
       });
 
+      // 3b. Visitor location accuracy halo
+      map.addLayer({
+        id: 'um-user-area',
+        type: 'fill',
+        source: 'um-user-area',
+        paint: {
+          'fill-color': '#33549e',
+          'fill-opacity': 0.1,
+        },
+      });
+
+      map.addLayer({
+        id: 'um-user-area-line',
+        type: 'line',
+        source: 'um-user-area',
+        paint: {
+          'line-color': '#33549e',
+          'line-width': 1,
+          'line-opacity': 0.35,
+        },
+      });
+
       // 4. Faculty zones
       map.addLayer({
         id: 'um-faculties-fill',
         type: 'fill',
         source: 'um-faculties',
         paint: {
-          'fill-color': ZONE_COLOR_EXPR,
-          'fill-opacity': 0.09,
+          'fill-color': ZONE_FILL_EXPR,
+          'fill-opacity': 0.7,
+        },
+      });
+
+      // A soft white casing plus a dotted accent line makes every zone border
+      // readable without turning the campus into a patchwork of solid lines.
+      map.addLayer({
+        id: 'um-faculties-outline-casing',
+        type: 'line',
+        source: 'um-faculties',
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: {
+          'line-color': '#ffffff',
+          'line-width': 3.4,
+          'line-opacity': 0.55,
         },
       });
 
@@ -370,11 +451,12 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
         id: 'um-faculties-outline',
         type: 'line',
         source: 'um-faculties',
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
         paint: {
-          'line-color': ZONE_COLOR_EXPR,
-          'line-width': 1.2,
-          'line-opacity': 0.45,
-          'line-dasharray': [4, 3],
+          'line-color': ZONE_ACCENT_EXPR,
+          'line-width': 2,
+          'line-opacity': 0.9,
+          'line-dasharray': [1, 2.2],
         },
       });
 
@@ -384,8 +466,8 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
         source: 'um-faculties',
         filter: ['==', ['get', 'id'], '__none__'],
         paint: {
-          'fill-color': ZONE_COLOR_EXPR,
-          'fill-opacity': 0.2,
+          'fill-color': ZONE_FILL_EXPR,
+          'fill-opacity': 0.95,
         },
       });
 
@@ -395,9 +477,9 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
         source: 'um-faculties',
         filter: ['==', ['get', 'id'], '__none__'],
         paint: {
-          'line-color': ZONE_COLOR_EXPR,
-          'line-width': 2.6,
-          'line-opacity': 0.95,
+          'line-color': ZONE_ACCENT_EXPR,
+          'line-width': 2.8,
+          'line-opacity': 0.98,
         },
       });
 
@@ -565,7 +647,7 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
         source: 'um-buildings',
         filter: ['all', ['==', ['get', 'faculty_id'], '__none__'], ['!=', ['get', 'is_canopy'], true]],
         paint: {
-          'line-color': '#2f5bb7',
+          'line-color': '#33549e',
           'line-width': 2,
           'line-opacity': 0.95,
         },
@@ -860,6 +942,13 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
 
       readyRef.current = true;
       syncAllDynamicState();
+      applyUserLocation(map, latestRef.current.userLocation);
+
+      // The accuracy halo should sit above buildings but below labels/POIs.
+      if (map.getLayer('um-user-area') && map.getLayer('um-pois-circle')) {
+        map.moveLayer('um-user-area', 'um-pois-circle');
+        map.moveLayer('um-user-area-line', 'um-pois-circle');
+      }
     };
 
     const syncAllDynamicState = () => {
@@ -880,7 +969,7 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
             ? [
                 'case',
                 ['==', ['get', 'faculty_id'], cur.activeFaculty.id],
-                '#2f5bb7',
+                ['get', 'faculty_color'],
                 '#e6eaf3',
               ]
             : ['case', ['==', ['get', 'has_rooms'], true], '#fbfcff', '#eef1f8'],
@@ -933,7 +1022,7 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
         map.setPaintProperty(
           'um-faculty-buildings-outline',
           'line-color',
-          zoneAccent(cur.activeFaculty?.zone_kind),
+          cur.activeFaculty?.accent ?? zoneAccent(cur.activeFaculty?.zone_kind),
         );
       }
 
@@ -961,7 +1050,7 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
         }
       };
       setVis(['um-boundary-line', 'um-boundary-glow', 'um-outer-mask'], cur.visibility.boundary);
-      setVis(['um-faculties-fill', 'um-faculties-outline', 'um-faculties-selected-fill', 'um-faculties-selected'], cur.visibility.faculties);
+      setVis(['um-faculties-fill', 'um-faculties-outline-casing', 'um-faculties-outline', 'um-faculties-selected-fill', 'um-faculties-selected'], cur.visibility.faculties);
       setVis(['um-roads-casing', 'um-roads-line'], cur.visibility.roads);
       setVis(['um-footways-line', 'um-shortcuts-glow', 'um-shortcuts-line', 'um-steps-line'], cur.visibility.pathways);
       setVis(['um-transit-casing', 'um-transit-line'], cur.visibility.busRoutes);
@@ -1135,12 +1224,20 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
       originMarkerRef.current?.remove();
       destMarkerRef.current?.remove();
       liveNavMarkerRef.current?.remove();
+      userMarkerRef.current?.remove();
       hoverPopup.remove();
       map.remove();
       mapRef.current = null;
       readyRef.current = false;
     };
   }, []);
+
+  // Keep the visitor's location dot and accuracy halo in sync with the fix.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !readyRef.current) return;
+    applyUserLocation(map, userLocation);
+  }, [userLocation]);
 
   // Sync dynamic filters, paints & visibility whenever React state changes
   useEffect(() => {
@@ -1159,7 +1256,7 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
           ? [
               'case',
               ['==', ['get', 'faculty_id'], activeFaculty.id],
-              '#2f5bb7',
+              ['get', 'faculty_color'],
               '#e6eaf3',
             ]
           : ['case', ['==', ['get', 'has_rooms'], true], '#fbfcff', '#eef1f8'],
@@ -1206,7 +1303,7 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
       map.setPaintProperty(
         'um-faculty-buildings-outline',
         'line-color',
-        zoneAccent(activeFaculty?.zone_kind),
+        activeFaculty?.accent ?? zoneAccent(activeFaculty?.zone_kind),
       );
     }
 
@@ -1229,7 +1326,7 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
       }
     };
     setVis(['um-boundary-line', 'um-boundary-glow', 'um-outer-mask'], visibility.boundary);
-    setVis(['um-faculties-fill', 'um-faculties-outline', 'um-faculties-selected-fill', 'um-faculties-selected'], visibility.faculties);
+    setVis(['um-faculties-fill', 'um-faculties-outline-casing', 'um-faculties-outline', 'um-faculties-selected-fill', 'um-faculties-selected'], visibility.faculties);
     setVis(['um-roads-casing', 'um-roads-line'], visibility.roads);
     setVis(['um-footways-line', 'um-shortcuts-glow', 'um-shortcuts-line', 'um-steps-line'], visibility.pathways);
     setVis(['um-transit-casing', 'um-transit-line'], visibility.busRoutes);

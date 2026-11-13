@@ -150,7 +150,12 @@ export function ZoneDirectoryModal({
                 onClick={() => onSelectZone(z)}
               >
                 <span className="zone-card__top">
-                  <span className="zone-card__code">{z.code}</span>
+                  <span
+                    className="zone-card__code"
+                    style={{ background: z.color, color: z.accent ?? 'var(--on-primary-container)' }}
+                  >
+                    {z.code}
+                  </span>
                   <span className="zone-card__kind">{zoneKindLabel(z.zone_kind)}</span>
                 </span>
                 <span>

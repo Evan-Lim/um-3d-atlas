@@ -18,6 +18,7 @@ interface LiveNavHudProps {
   gpsStatus: 'idle' | 'watching' | 'error';
   gpsError: string | null;
   arrived: boolean;
+  speedMps: number;
   onTogglePause: () => void;
   onToggleSpeed: () => void;
   onToggleSource: () => void;
@@ -43,6 +44,41 @@ function stepIcon(step: RouteStep | undefined, mode: RouteMode): IconName {
   return 'arrowUp';
 }
 
+function SpeedDial({ speedMps }: { speedMps: number }) {
+  const kmh = Math.max(0, Math.round(speedMps * 3.6));
+  const radius = 40;
+  const circumference = 2 * Math.PI * radius;
+  const arc = circumference * 0.75;
+  const progress = Math.min(1, kmh / 40);
+
+  return (
+    <div className="speed-dial" role="img" aria-label={`Speed ${kmh} kilometres per hour`}>
+      <svg viewBox="0 0 100 100" aria-hidden="true">
+        <circle
+          className="speed-dial__track"
+          cx="50"
+          cy="50"
+          r={radius}
+          strokeDasharray={`${arc} ${circumference}`}
+          transform="rotate(135 50 50)"
+        />
+        <circle
+          className="speed-dial__progress"
+          cx="50"
+          cy="50"
+          r={radius}
+          strokeDasharray={`${arc * progress} ${circumference}`}
+          transform="rotate(135 50 50)"
+        />
+      </svg>
+      <div className="speed-dial__readout">
+        <span className="speed-dial__value">{kmh}</span>
+        <span className="speed-dial__unit">km/h</span>
+      </div>
+    </div>
+  );
+}
+
 export const LiveNavHud: FC<LiveNavHudProps> = ({
   route,
   mode,
@@ -59,6 +95,7 @@ export const LiveNavHud: FC<LiveNavHudProps> = ({
   gpsStatus,
   gpsError,
   arrived,
+  speedMps,
   onTogglePause,
   onToggleSpeed,
   onToggleSource,
@@ -78,7 +115,9 @@ export const LiveNavHud: FC<LiveNavHudProps> = ({
           </span>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-              <span className="nav-hud__eyebrow">{arrived ? 'Arrived' : 'Live navigation'}</span>
+              <span className="nav-hud__eyebrow">
+                {arrived ? 'Arrived' : isSimulating ? 'Simulated preview' : 'Live navigation'}
+              </span>
               <span className="nav-hud__eyebrow" style={{ maxWidth: '55%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textTransform: 'none', letterSpacing: 0, fontSize: 11 }}>
                 {destinationName}
               </span>
@@ -97,24 +136,29 @@ export const LiveNavHud: FC<LiveNavHudProps> = ({
       </div>
 
       <div className="nav-hud__surface">
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-          <span className="nav-hud__stats">
-            <span className="nav-hud__time">{Math.max(0, Math.round(remainingMinutes))} min</span>
-            <span className="nav-hud__meta">{formatDistance(remainingDistanceM)} remaining</span>
-          </span>
-          <button type="button" className="m3-btn m3-btn--outlined m3-btn--sm nav-hud__exit" onClick={onExit}>
-            End
-          </button>
-        </div>
+        <div className="nav-hud__status">
+          <div className="nav-hud__status-main">
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+              <span className="nav-hud__stats">
+                <span className="nav-hud__time">{Math.max(0, Math.round(remainingMinutes))} min</span>
+                <span className="nav-hud__meta">{formatDistance(remainingDistanceM)} remaining</span>
+              </span>
+              <button type="button" className="m3-btn m3-btn--outlined m3-btn--sm nav-hud__exit" onClick={onExit}>
+                End
+              </button>
+            </div>
 
-        <div className="progress-line" aria-hidden="true">
-          <div className="progress-line__fill" style={{ width: `${percent}%` }} />
+            <div className="progress-line" aria-hidden="true">
+              <div className="progress-line__fill" style={{ width: `${percent}%` }} />
+            </div>
+          </div>
+          <SpeedDial speedMps={speedMps} />
         </div>
 
         <div className="nav-hud__actions">
           <button type="button" className="m3-btn m3-btn--tonal m3-btn--sm" onClick={onToggleSource}>
             <Icon name="locate" size={14} />
-            {isSimulating ? 'Use device GPS' : 'Simulate drive'}
+            {isSimulating ? 'Use device GPS' : 'Simulate route'}
           </button>
 
           {isSimulating && (

@@ -4,6 +4,23 @@ An interactive 3D campus atlas for Universiti Malaya. Browse faculties, resident
 colleges (KK1–KK13), institutes and landmarks; inspect buildings and indoor rooms;
 and plan walking, shuttle or driving routes across campus.
 
+Location, routing and navigation behave like a map product rather than a demo:
+
+- The browser is asked for a location fix once on load; a blue dot and accuracy
+  halo show where the visitor is. The **Locate** item recentres the map.
+- **Directions → Start from my location** uses that fix as the route origin.
+- Live navigation waits for real device GPS. The route walkthrough is only
+  animated after pressing **Simulate route**, and runs at realistic speeds.
+- Faculty / KK / institute borders are drawn as dotted accent lines while each
+  zone keeps its own very light tint.
+- On phones, the details and directions sheets have a grab handle so they can be
+  collapsed to a compact bar to reveal the map. Zoom and locate controls float
+  above the bottom navigation, and turn-by-turn navigation includes a small
+  speed dial.
+
+Geolocation needs a secure context (`https://` or `http://localhost`); Netlify
+serves the site over HTTPS.
+
 ## Stack
 
 - **React 19** + **TypeScript** — UI runtime, bundled at build time (no CDN).

@@ -1,5 +1,11 @@
 export type RouteMode = 'walk' | 'bus' | 'drive';
 
+export interface UserLocation {
+  coord: [number, number];
+  accuracy: number;
+  timestamp: number;
+}
+
 export interface FacultyProps {
   id: string;
   code: string;
@@ -9,6 +15,7 @@ export interface FacultyProps {
   name_ms: string;
   category: string;
   color: string;
+  accent?: string;
   website: string;
   center: [number, number];
   zoom: number;

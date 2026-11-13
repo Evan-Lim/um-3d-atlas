@@ -230,15 +230,20 @@ export function SearchBar({
                   ? 'Suggested'
                   : `${activeChipLabel} · ${results.length}`}
             </span>
-            {activeChip !== 'all' && (
+          </div>
+          <div className="search-filter-row no-scrollbar" role="tablist" aria-label="Search filters">
+            {CHIPS.map((c) => (
               <button
+                key={c.id}
                 type="button"
-                className="m3-btn m3-btn--text m3-btn--sm"
-                onClick={() => onChangeChip('all')}
+                role="tab"
+                aria-selected={activeChip === c.id}
+                className={`m3-chip${activeChip === c.id ? ' is-selected' : ''}`}
+                onClick={() => onChangeChip(c.id)}
               >
-                Show all
+                {c.label}
               </button>
-            )}
+            ))}
           </div>
           {results.length === 0 ? (
             <div className="search-empty">No matches. Try FSKTM, KK12, KPPI, IAS or “library”.</div>
@@ -270,26 +275,6 @@ export function SearchBar({
               ))}
             </div>
           )}
-        </div>
-      )}
-
-      {!focused && (
-        <div className="search-chips no-scrollbar" role="tablist" aria-label="Search filters">
-          {CHIPS.map((c) => (
-            <button
-              key={c.id}
-              type="button"
-              role="tab"
-              aria-selected={activeChip === c.id}
-              className={`m3-chip${activeChip === c.id ? ' is-selected' : ''}`}
-              onClick={() => {
-                onChangeChip(c.id);
-                setFocused(true);
-              }}
-            >
-              {c.label}
-            </button>
-          ))}
         </div>
       )}
     </div>

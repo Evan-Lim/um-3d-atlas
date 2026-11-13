@@ -316,6 +316,50 @@ export class CampusRouter {
     return { coordinates, segments, totalDistanceM, shortcutCount, stepsCount, steps };
   }
 
+  /**
+   * Join a custom start/end coordinate (map pick, device location) to the
+   * nearest graph node so the drawn route begins where the visitor is.
+   */
+  private connectPointEnds(
+    origin: SearchItem,
+    dest: SearchItem,
+    coordinates: [number, number][],
+    segments: ComputedRoute['segments'],
+  ): { startM: number; endM: number } {
+    let startM = 0;
+    let endM = 0;
+
+    if (origin.entrance_node < 0 && coordinates.length > 0) {
+      const gap = distMeters(origin.center, coordinates[0]);
+      if (gap > 3) {
+        const first = coordinates[0];
+        coordinates.unshift(origin.center);
+        if (segments.length > 0) {
+          segments[0].coordinates.unshift(origin.center);
+        } else if (coordinates.length > 1) {
+          segments.push({ kind: 'footway', coordinates: [origin.center, first] });
+        }
+        startM = gap;
+      }
+    }
+
+    if (dest.entrance_node < 0 && coordinates.length > 0) {
+      const last = coordinates[coordinates.length - 1];
+      const gap = distMeters(last, dest.center);
+      if (gap > 3) {
+        coordinates.push(dest.center);
+        if (segments.length > 0) {
+          segments[segments.length - 1].coordinates.push(dest.center);
+        } else {
+          segments.push({ kind: 'footway', coordinates: [last, dest.center] });
+        }
+        endM = gap;
+      }
+    }
+
+    return { startM, endM };
+  }
+
   private sliceBusPolyline(
     routeId: string,
     boardCoord: [number, number],
@@ -580,6 +624,18 @@ export class CampusRouter {
       }
     }
 
+    const connector = this.connectPointEnds(origin, dest, coordinates, segments);
+    totalDistanceM += connector.startM + connector.endM;
+    if (connector.startM > 3) {
+      steps.unshift({
+        instruction: `Start from ${origin.title}`,
+        detail: 'Head to the nearest campus path',
+        distanceM: Math.round(connector.startM),
+        kind: 'footway',
+        coord: origin.center,
+      });
+    }
+
     if (dest.kind === 'room') {
       const floorText = dest.floor && dest.floor > 0 ? `Level ${dest.floor}` : 'Ground Floor (G)';
       steps.push({
@@ -598,7 +654,7 @@ export class CampusRouter {
       coord: dest.center,
     });
 
-    const walkDist = Math.max(0, best.firstStopWalkM + best.lastStopWalkM);
+    const walkDist = Math.max(0, best.firstStopWalkM + best.lastStopWalkM + connector.startM + connector.endM);
     const busDist = Math.max(0, totalDistanceM - walkDist);
     const waitMin = best.legs.reduce((acc, l) => acc + l.route.headway_min * 0.45, 0);
     const estimatedMinutes = Math.max(2, Math.round(walkDist / 78 + busDist / 380 + waitMin));
@@ -643,6 +699,8 @@ export class CampusRouter {
     }
 
     const built = this.buildWalkLegs(res.nodeSeq, res.edgeSeq);
+    const connector = this.connectPointEnds(origin, dest, built.coordinates, built.segments);
+    built.totalDistanceM += connector.startM + connector.endM;
     const steps: RouteStep[] = [];
     let totalDistanceM = built.totalDistanceM;
 
@@ -652,6 +710,16 @@ export class CampusRouter {
         detail: 'Take stairs or lift to Ground floor and exit building',
         distanceM: 15,
         kind: 'indoor',
+        coord: origin.center,
+      });
+    }
+
+    if (connector.startM > 3) {
+      steps.push({
+        instruction: `Start from ${origin.title}`,
+        detail: 'Head to the nearest campus path',
+        distanceM: Math.round(connector.startM),
+        kind: 'footway',
         coord: origin.center,
       });
     }

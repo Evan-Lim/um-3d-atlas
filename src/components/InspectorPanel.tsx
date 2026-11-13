@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { Icon } from './Icon';
 import { zoneAccent, zoneKindLabel } from '../theme';
 import type { BuildingProps, FacultyProps, RoomProps, SearchItem, TransitRoute } from '../types/map';
@@ -52,9 +53,16 @@ export function InspectorPanel({
   onSetOrigin,
   onClose,
 }: InspectorPanelProps) {
+  const [collapsed, setCollapsed] = useState(false);
+  const selectionKey = `${faculty?.id ?? ''}|${building?.id ?? ''}|${room?.id ?? ''}|${poi?.id ?? ''}`;
+
+  useEffect(() => {
+    setCollapsed(false);
+  }, [selectionKey]);
+
   if (!faculty && !building && !room && !poi) return null;
 
-  const accent = zoneAccent(faculty?.zone_kind ?? poi?.zone_kind);
+  const accent = faculty?.accent ?? zoneAccent(faculty?.zone_kind ?? poi?.zone_kind);
   const actionTarget = room
     ? { kind: 'room' as const, id: room.id }
     : building
@@ -85,7 +93,16 @@ export function InspectorPanel({
   const code = faculty?.code ?? '';
 
   return (
-    <aside className="inspector m3-panel" aria-label="Place details">
+    <aside className={`inspector m3-panel${collapsed ? ' is-collapsed' : ''}`} aria-label="Place details">
+      <button
+        type="button"
+        className="sheet-handle"
+        onClick={() => setCollapsed((value) => !value)}
+        aria-label={collapsed ? 'Expand details' : 'Collapse details'}
+        aria-expanded={!collapsed}
+      >
+        <span className="sheet-handle__grip" />
+      </button>
       <div className="crumbs">
         <button type="button" className="crumbs__btn" onClick={onResetCampus}>
           UM

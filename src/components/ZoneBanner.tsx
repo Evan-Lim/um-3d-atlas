@@ -2,6 +2,7 @@ import { Icon } from './Icon';
 
 interface ZoneBannerProps {
   code?: string;
+  accent?: string;
   title: string;
   subtitle: string;
   onClose: () => void;
@@ -11,10 +12,14 @@ interface ZoneBannerProps {
  * A quiet, semi-transparent Material surface that keeps the selected
  * faculty / residential college / institute name legible over the 3D map.
  */
-export function ZoneBanner({ code, title, subtitle, onClose }: ZoneBannerProps) {
+export function ZoneBanner({ code, accent, title, subtitle, onClose }: ZoneBannerProps) {
   return (
     <div className="zone-banner" role="status" aria-live="polite">
-      {code && <span className="zone-banner__code">{code}</span>}
+      {code && (
+        <span className="zone-banner__code" style={accent ? { background: accent } : undefined}>
+          {code}
+        </span>
+      )}
       <div className="zone-banner__body">
         <p className="zone-banner__title">{title}</p>
         <p className="zone-banner__meta">{subtitle}</p>
