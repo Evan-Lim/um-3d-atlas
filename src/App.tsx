@@ -5,12 +5,21 @@ import { FloorControls } from './components/FloorControls';
 import { InspectorPanel } from './components/InspectorPanel';
 import { LayerControls } from './components/LayerControls';
 import { LiveNavHud } from './components/LiveNavHud';
+import { SavedPlacesSheet } from './components/SavedPlacesSheet';
 import { SearchBar, type SearchFilterChip } from './components/SearchBar';
+import { TransitHubModal } from './components/TransitHubModal';
 import { ZoneBanner } from './components/ZoneBanner';
 import { ZoneDirectoryModal } from './components/ZoneDirectoryModal';
 import { type CameraCommand, UmMapCanvas, type UmContextBundle } from './components/UmMapCanvas';
 import { CampusRouter, distMeters } from './routing/pathfinder';
 import { applyZonePalette, zoneKindLabel } from './theme';
+import {
+  buildAtlasShareUrl,
+  compareAllModes,
+  parseAtlasUrlParams,
+  pushRecentPlace,
+  toggleSavedPlace,
+} from './utils/atlasUtils';
 import type {
   BuildingProps,
   ComputedRoute,
@@ -25,7 +34,6 @@ import type {
   UserLocation,
 } from './types/map';
 
-
 const EMPTY_FC: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
 const EMPTY_CONTEXT: UmContextBundle = {
   roads: EMPTY_FC,
@@ -35,6 +43,16 @@ const EMPTY_CONTEXT: UmContextBundle = {
 };
 const EMPTY_TRANSIT: TransitData = { routes: [], geojson: EMPTY_FC };
 const UM_CENTER: [number, number] = [101.6538, 3.1209];
+
+const SAVED_STORAGE_KEY = 'um-atlas-saved-v1';
+const RECENT_STORAGE_KEY = 'um-atlas-recent-v1';
+const THEME_STORAGE_KEY = 'um-atlas-theme-v1';
+
+const DEFAULT_SAVED_KEYS = [
+  'faculty:FSKTM',
+  'faculty:FK',
+  'rail_station:station-mrt-phileo',
+];
 
 /** Realistic simulation speeds in m/s (walking, campus shuttle, driving). */
 const SIM_SPEED_MPS: Record<RouteMode, number> = { walk: 1.4, bus: 6.5, drive: 9 };
@@ -76,6 +94,20 @@ function coordsBounds(coords: [number, number][]): [[number, number], [number, n
   ];
 }
 
+function loadStoredArray(key: string, fallback: string[]): string[] {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.every((x) => typeof x === 'string')) {
+      return parsed;
+    }
+  } catch {
+    // Ignore storage read errors
+  }
+  return fallback;
+}
+
 export function App() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -89,6 +121,58 @@ export function App() {
   const [searchItems, setSearchItems] = useState<SearchItem[]>([]);
   const [graphStats, setGraphStats] = useState({ nodes: 0, edges: 0 });
   const routerRef = useRef<CampusRouter | null>(null);
+  const appliedUrlRef = useRef(false);
+
+  // Material 3 Theme (Light / Dark)
+  const [darkMode, setDarkMode] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(THEME_STORAGE_KEY) === 'dark';
+    } catch {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', darkMode ? 'dark' : 'light');
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, darkMode ? 'dark' : 'light');
+    } catch {
+      // Ignore storage write errors
+    }
+  }, [darkMode]);
+
+  // Saved & Recent Places state
+  const [savedKeys, setSavedKeys] = useState<string[]>(() =>
+    loadStoredArray(SAVED_STORAGE_KEY, DEFAULT_SAVED_KEYS),
+  );
+  const [recentKeys, setRecentKeys] = useState<string[]>(() =>
+    loadStoredArray(RECENT_STORAGE_KEY, []),
+  );
+  const [savedSheetOpen, setSavedSheetOpen] = useState(false);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SAVED_STORAGE_KEY, JSON.stringify(savedKeys));
+    } catch {
+      // Ignore storage write errors
+    }
+  }, [savedKeys]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(RECENT_STORAGE_KEY, JSON.stringify(recentKeys));
+    } catch {
+      // Ignore storage write errors
+    }
+  }, [recentKeys]);
+
+  const recordRecentKey = useCallback((key: string) => {
+    setRecentKeys((prev) => pushRecentPlace(prev, key));
+  }, []);
+
+  // Transit Hub & Highlighted Bus Route state
+  const [transitHubOpen, setTransitHubOpen] = useState(false);
+  const [highlightedTransitId, setHighlightedTransitId] = useState<string | null>(null);
 
   // Selection / Inspector state
   const [activeFaculty, setActiveFaculty] = useState<FacultyProps | null>(null);
@@ -181,10 +265,10 @@ export function App() {
     return () => window.clearTimeout(timer);
   }, [requestUserLocation]);
 
-  // Location messages are transient.
+  // Location / snackbar messages are transient.
   useEffect(() => {
     if (!locationNotice) return;
-    const timer = window.setTimeout(() => setLocationNotice(null), 7000);
+    const timer = window.setTimeout(() => setLocationNotice(null), 5000);
     return () => window.clearTimeout(timer);
   }, [locationNotice]);
 
@@ -367,6 +451,18 @@ export function App() {
     return m;
   }, [searchItems]);
 
+  const savedItems = useMemo<SearchItem[]>(() => {
+    return savedKeys
+      .map((k) => searchItemByKey.get(k))
+      .filter((it): it is SearchItem => Boolean(it));
+  }, [savedKeys, searchItemByKey]);
+
+  const recentItems = useMemo<SearchItem[]>(() => {
+    return recentKeys
+      .map((k) => searchItemByKey.get(k))
+      .filter((it): it is SearchItem => Boolean(it));
+  }, [recentKeys, searchItemByKey]);
+
   const facultyBuildings = useMemo(() => {
     if (!activeFaculty) return [];
     return allBuildings
@@ -387,6 +483,11 @@ export function App() {
     if (originItem.id === destItem.id && originItem.kind === destItem.kind) return null;
     return routerRef.current.computeRoute(originItem, destItem, routeMode, { stepFree });
   }, [originItem, destItem, routeMode, stepFree]);
+
+  // Multi-modal comparison across Walk, Bus, and Drive
+  const modeComparison = useMemo(() => {
+    return compareAllModes(routerRef.current, originItem, destItem, stepFree);
+  }, [originItem, destItem, stepFree, loading]);
 
   // Geometry metrics along computedRoute for Live Navigation
   const routeMetrics = useMemo(() => {
@@ -461,7 +562,6 @@ export function App() {
     setGpsStatus('watching');
     setGpsError(null);
 
-    // Wait for a real fix. We never start the simulation automatically.
     let receivedValidFix = false;
     const fallbackTimer = window.setTimeout(() => {
       if (!receivedValidFix) {
@@ -594,6 +694,7 @@ export function App() {
     setActiveBuilding(null);
     setActiveFaculty(null);
     setActiveFloor('all');
+    setSavedSheetOpen(false);
     sendCamera({
       center: UM_CENTER,
       zoom: 15.1,
@@ -604,11 +705,13 @@ export function App() {
 
   const selectFaculty = useCallback(
     (fac: FacultyProps) => {
+      setSavedSheetOpen(false);
       setActivePoi(null);
       setActiveFaculty(fac);
       setActiveBuilding(null);
       setActiveRoom(null);
       setActiveFloor('all');
+      recordRecentKey(`faculty:${fac.id}`);
       sendCamera({
         center: fac.center,
         zoom: fac.zoom || 17.2,
@@ -616,44 +719,48 @@ export function App() {
         bearing: fac.bearing ?? -16,
       });
     },
-    [sendCamera],
+    [sendCamera, recordRecentKey],
   );
 
   const selectBuilding = useCallback(
     (bld: BuildingProps) => {
       const parentFac = facultyById.get(bld.faculty_id) ?? null;
+      setSavedSheetOpen(false);
       setActivePoi(null);
       setActiveFaculty(parentFac);
       setActiveBuilding(bld);
       setActiveRoom(null);
       setActiveFloor('all');
       if (bld.has_rooms) setXrayEnabled(true);
+      recordRecentKey(`building:${bld.id}`);
       sendCamera({
         center: bld.center,
         zoom: 18.4,
         pitch: 58,
       });
     },
-    [facultyById, sendCamera],
+    [facultyById, sendCamera, recordRecentKey],
   );
 
   const selectRoom = useCallback(
     (room: RoomProps) => {
       const parentFac = facultyById.get(room.faculty_id) ?? null;
       const parentBld = buildingById.get(room.building_id) ?? null;
+      setSavedSheetOpen(false);
       setActivePoi(null);
       setActiveFaculty(parentFac);
       setActiveBuilding(parentBld);
       setActiveRoom(room);
       setActiveFloor(room.floor);
       setXrayEnabled(true);
+      recordRecentKey(`room:${room.id}`);
       sendCamera({
         center: room.center,
         zoom: 19.2,
         pitch: 62,
       });
     },
-    [facultyById, buildingById, sendCamera],
+    [facultyById, buildingById, sendCamera, recordRecentKey],
   );
 
   const selectPoiById = useCallback(
@@ -665,21 +772,24 @@ export function App() {
             (i.kind === 'gate' || i.kind === 'bus_stop' || i.kind === 'rail_station' || i.kind === 'point'),
         ) ?? null;
       if (!found) return;
+      setSavedSheetOpen(false);
       setActiveFaculty(null);
       setActiveBuilding(null);
       setActiveRoom(null);
       setActivePoi(found);
+      recordRecentKey(`${found.kind}:${found.id}`);
       sendCamera({
         center: found.center,
         zoom: found.kind === 'rail_station' ? 16.8 : 17.6,
         pitch: 50,
       });
     },
-    [searchItems, sendCamera],
+    [searchItems, sendCamera, recordRecentKey],
   );
 
   const handleSelectSearchItem = useCallback(
     (item: SearchItem) => {
+      setSavedSheetOpen(false);
       if (item.kind === 'faculty') {
         const fac = facultyById.get(item.id);
         if (fac) selectFaculty(fac);
@@ -694,11 +804,36 @@ export function App() {
         setActiveBuilding(null);
         setActiveRoom(null);
         setActivePoi(item);
+        recordRecentKey(`${item.kind}:${item.id}`);
         sendCamera({ center: item.center, zoom: item.kind === 'rail_station' ? 16.8 : 17.6, pitch: 52 });
       }
     },
-    [facultyById, buildingById, roomById, selectFaculty, selectBuilding, selectRoom, sendCamera],
+    [facultyById, buildingById, roomById, selectFaculty, selectBuilding, selectRoom, sendCamera, recordRecentKey],
   );
+
+  // Apply URL query parameters (?place=... or ?from=...&to=...) once data is loaded
+  useEffect(() => {
+    if (loading || appliedUrlRef.current || searchItems.length === 0) return;
+    appliedUrlRef.current = true;
+    const params = parseAtlasUrlParams(window.location.search);
+    if (params.fromKey && params.toKey) {
+      const fromIt = searchItemByKey.get(params.fromKey);
+      const toIt = searchItemByKey.get(params.toKey);
+      if (fromIt && toIt) {
+        setOriginItem(fromIt);
+        setDestItem(toIt);
+        if (params.mode) setRouteMode(params.mode);
+        setDirectionsOpen(true);
+        return;
+      }
+    }
+    if (params.placeKey) {
+      const placeIt = searchItemByKey.get(params.placeKey);
+      if (placeIt) {
+        handleSelectSearchItem(placeIt);
+      }
+    }
+  }, [loading, searchItems.length, searchItemByKey, handleSelectSearchItem]);
 
   const resolveTargetToSearchItem = useCallback(
     (target: { kind: 'faculty' | 'building' | 'room' | 'poi'; id: string }): SearchItem | null => {
@@ -722,6 +857,7 @@ export function App() {
       if (dest) {
         setDestItem(dest);
         setDirectionsOpen(true);
+        setSavedSheetOpen(false);
         setPickTarget(null);
         setNavActive(false);
         if (originItem && originItem.id === dest.id) {
@@ -733,18 +869,121 @@ export function App() {
     [resolveTargetToSearchItem, originItem, searchItems],
   );
 
+  const handleNavigateToCoord = useCallback(
+    (coord: [number, number], title: string) => {
+      // Find matching bus_stop SearchItem if one exists nearby, else create a custom point
+      let dest =
+        searchItems.find(
+          (i) => i.kind === 'bus_stop' && distMeters(i.center, coord) < 30,
+        ) ?? null;
+      if (!dest) {
+        dest = {
+          id: `stop-${Date.now()}`,
+          kind: 'bus_stop',
+          title,
+          subtitle: 'Campus bus / shuttle stop',
+          keywords: `${title} bus stop shuttle`,
+          center: coord,
+          entrance_node: -1,
+        };
+      }
+      // If an active place is selected, use it as the walking origin if no origin is set
+      if (activeRoom || activeBuilding || activeFaculty || activePoi) {
+        const currentPlace = activeRoom
+          ? resolveTargetToSearchItem({ kind: 'room', id: activeRoom.id })
+          : activeBuilding
+            ? resolveTargetToSearchItem({ kind: 'building', id: activeBuilding.id })
+            : activeFaculty
+              ? resolveTargetToSearchItem({ kind: 'faculty', id: activeFaculty.id })
+              : activePoi;
+        if (currentPlace && currentPlace.id !== dest.id) {
+          setOriginItem(currentPlace);
+        }
+      }
+      setDestItem(dest);
+      setRouteMode('walk');
+      setDirectionsOpen(true);
+      setSavedSheetOpen(false);
+      setPickTarget(null);
+      setNavActive(false);
+    },
+    [searchItems, activeRoom, activeBuilding, activeFaculty, activePoi, resolveTargetToSearchItem],
+  );
+
   const handleSetOriginTarget = useCallback(
     (target: { kind: 'faculty' | 'building' | 'room' | 'poi'; id: string }) => {
       const org = resolveTargetToSearchItem(target);
       if (org) {
         setOriginItem(org);
         setDirectionsOpen(true);
+        setSavedSheetOpen(false);
         setPickTarget(null);
         setNavActive(false);
       }
     },
     [resolveTargetToSearchItem],
   );
+
+  // Active place key for bookmarking & sharing
+  const activePlaceKey = useMemo<string | null>(() => {
+    if (activeRoom) return `room:${activeRoom.id}`;
+    if (activeBuilding) return `building:${activeBuilding.id}`;
+    if (activeFaculty) return `faculty:${activeFaculty.id}`;
+    if (activePoi) return `${activePoi.kind}:${activePoi.id}`;
+    return null;
+  }, [activeRoom, activeBuilding, activeFaculty, activePoi]);
+
+  const isActivePlaceSaved = useMemo(() => {
+    if (!activePlaceKey) return false;
+    return savedKeys.includes(activePlaceKey);
+  }, [activePlaceKey, savedKeys]);
+
+  const handleToggleSaveActivePlace = useCallback(() => {
+    if (!activePlaceKey) return;
+    setSavedKeys((prev) => {
+      const wasSaved = prev.includes(activePlaceKey);
+      const next = toggleSavedPlace(prev, activePlaceKey);
+      setLocationNotice(wasSaved ? 'Removed from Saved places' : 'Saved to your campus bookmarks');
+      return next;
+    });
+  }, [activePlaceKey]);
+
+  const handleShareActivePlace = useCallback(async () => {
+    if (!activePlaceKey) return;
+    const shareUrl = buildAtlasShareUrl(window.location.origin + window.location.pathname, {
+      placeKey: activePlaceKey,
+    });
+    window.history.replaceState(null, '', shareUrl);
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      setLocationNotice('Place link copied to clipboard');
+    } catch {
+      setLocationNotice('Place link updated in address bar');
+    }
+  }, [activePlaceKey]);
+
+  const handleShareRoute = useCallback(async () => {
+    if (!originItem || !destItem) return;
+    const shareUrl = buildAtlasShareUrl(window.location.origin + window.location.pathname, {
+      fromKey: `${originItem.kind}:${originItem.id}`,
+      toKey: `${destItem.kind}:${destItem.id}`,
+      mode: routeMode,
+    });
+    window.history.replaceState(null, '', shareUrl);
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      setLocationNotice('Route link copied to clipboard');
+    } catch {
+      setLocationNotice('Route link updated in address bar');
+    }
+  }, [originItem, destItem, routeMode, stepFree]);
+
+  const handleHighlightTransitRoute = useCallback((routeId: string | null) => {
+    setHighlightedTransitId(routeId);
+    if (routeId) {
+      setVisibility((v) => ({ ...v, busRoutes: true }));
+    }
+  }, []);
 
   // Fit route when computed in Directions mode (when not already in live navigation)
   useEffect(() => {
@@ -773,8 +1012,9 @@ export function App() {
     setNavActive(true);
     setLayersOpen(false);
     setZoneDirectoryOpen(false);
+    setTransitHubOpen(false);
+    setSavedSheetOpen(false);
 
-    // Ensure bus routes layer is subtle/clean; zoom smoothly to start of route
     const startCoord = computedRoute.coordinates[0];
     const nextCoord = computedRoute.coordinates[1] ?? startCoord;
     sendCamera({
@@ -831,13 +1071,17 @@ export function App() {
     },
     [sendCamera],
   );
-  const hasLeftSheet = Boolean(activeFaculty || activeBuilding || activeRoom || activePoi);
+
+  const hasInspectorSelection = Boolean(activeFaculty || activeBuilding || activeRoom || activePoi);
+  const hasLeftSheet = hasInspectorSelection || savedSheetOpen;
   const floorOffset = directionsOpen || hasLeftSheet ? 524 : 104;
 
   const openDirections = useCallback(() => {
     setDirectionsOpen(true);
+    setSavedSheetOpen(false);
     setLayersOpen(false);
     setZoneDirectoryOpen(false);
+    setTransitHubOpen(false);
     if (!destItem && (activeRoom || activeBuilding || activeFaculty || activePoi)) {
       if (activeRoom) {
         const it = resolveTargetToSearchItem({ kind: 'room', id: activeRoom.id });
@@ -887,6 +1131,7 @@ export function App() {
     if (!location) return;
     setOriginItem(userLocationItem(location));
     setDirectionsOpen(true);
+    setSavedSheetOpen(false);
     setLayersOpen(false);
     setZoneDirectoryOpen(false);
     setPickTarget(null);
@@ -926,6 +1171,11 @@ export function App() {
     return null;
   }, [navActive, directionsOpen, activeRoom, activeBuilding, activeFaculty, activePoi]);
 
+  const highlightedTransitRoute = useMemo(() => {
+    if (!highlightedTransitId) return null;
+    return transitData.routes.find((r) => r.id === highlightedTransitId) ?? null;
+  }, [highlightedTransitId, transitData.routes]);
+
   const isMapBusy = directionsOpen || navActive;
   const showMobileSheet = !navActive && (hasLeftSheet || directionsOpen);
   const currentSpeedMps =
@@ -956,6 +1206,8 @@ export function App() {
         activeFloor={activeFloor}
         xrayEnabled={xrayEnabled}
         is3D={is3D}
+        darkMode={darkMode}
+        highlightedTransitId={highlightedTransitId}
         visibility={visibility}
         userLocation={navActive ? null : userLocation}
         route={directionsOpen || navActive ? computedRoute : null}
@@ -977,9 +1229,8 @@ export function App() {
         onPickCoordinate={handlePickCoordinate}
       />
 
-
       <nav className="app-rail" aria-label="Primary navigation">
-        <div className="rail-brand">
+        <div className="rail-brand" onClick={resetToCampus} style={{ cursor: 'pointer' }} title="Reset campus view">
           <span className="rail-brand__mark">UM</span>
           <span className="rail-brand__text">3D Atlas</span>
         </div>
@@ -1007,6 +1258,34 @@ export function App() {
               <Icon name="zones" size={19} />
             </span>
             <span className="rail-item__label">Explore</span>
+          </button>
+          <button
+            type="button"
+            className={`rail-item${transitHubOpen || Boolean(highlightedTransitId) ? ' is-active' : ''}`}
+            onClick={() => setTransitHubOpen(true)}
+            aria-label="Campus transit and shuttle lines"
+            disabled={navActive}
+          >
+            <span className="rail-item__icon">
+              <Icon name="bus" size={19} />
+            </span>
+            <span className="rail-item__label">Transit</span>
+          </button>
+          <button
+            type="button"
+            className={`rail-item${savedSheetOpen ? ' is-active' : ''}`}
+            onClick={() => {
+              setSavedSheetOpen((v) => !v);
+              setDirectionsOpen(false);
+              setLayersOpen(false);
+            }}
+            aria-label="Saved places and recent history"
+            disabled={navActive}
+          >
+            <span className="rail-item__icon">
+              <Icon name={savedKeys.length > 0 ? 'bookmarkFilled' : 'bookmark'} size={18} />
+            </span>
+            <span className="rail-item__label">Saved</span>
           </button>
           <button
             type="button"
@@ -1039,7 +1318,13 @@ export function App() {
             </span>
             <span className="rail-item__label">Layers</span>
           </button>
-          <button type="button" className="rail-item" onClick={handleLocate} aria-label="Find my location" disabled={locating}>
+          <button
+            type="button"
+            className="rail-item"
+            onClick={handleLocate}
+            aria-label="Find my location"
+            disabled={locating}
+          >
             <span className="rail-item__icon">
               <Icon name="locate" size={19} />
             </span>
@@ -1047,6 +1332,17 @@ export function App() {
           </button>
         </div>
         <div className="rail-foot">
+          <button
+            type="button"
+            className={`rail-item${darkMode ? ' is-active' : ''}`}
+            onClick={() => setDarkMode((v) => !v)}
+            aria-label={darkMode ? 'Switch to light theme' : 'Switch to dark theme'}
+          >
+            <span className="rail-item__icon">
+              <Icon name={darkMode ? 'sun' : 'moon'} size={18} />
+            </span>
+            <span className="rail-item__label">{darkMode ? 'Light' : 'Dark'}</span>
+          </button>
           <button
             type="button"
             className={`rail-item${!is3D ? ' is-active' : ''}`}
@@ -1076,6 +1372,9 @@ export function App() {
         directionsOpen={directionsOpen}
         navActive={navActive}
         activeChip={activeChip}
+        savedKeys={savedKeys}
+        recentKeys={recentKeys}
+        hasLeftSheet={hasLeftSheet}
         onChangeChip={setActiveChip}
         onSelectItem={handleSelectSearchItem}
         onOpenDirections={openDirections}
@@ -1092,7 +1391,57 @@ export function App() {
         />
       )}
 
-      {!directionsOpen && !navActive && (
+      {highlightedTransitRoute && !navActive && (
+        <div className="transit-map-pill" role="status">
+          <span
+            className="transit-map-pill__swatch"
+            style={{ background: highlightedTransitRoute.color }}
+          />
+          <span className="transit-map-pill__text">
+            <strong>{highlightedTransitRoute.code}</strong> · {highlightedTransitRoute.name}
+          </span>
+          <button
+            type="button"
+            className="m3-btn m3-btn--text m3-btn--sm"
+            onClick={() => setTransitHubOpen(true)}
+          >
+            Stops
+          </button>
+          <button
+            type="button"
+            className="m3-icon-btn m3-icon-btn--sm"
+            onClick={() => setHighlightedTransitId(null)}
+            aria-label="Clear transit highlight"
+          >
+            <Icon name="close" size={14} />
+          </button>
+        </div>
+      )}
+
+      <SavedPlacesSheet
+        open={savedSheetOpen && !directionsOpen && !navActive}
+        savedItems={savedItems}
+        recentItems={recentItems}
+        onSelectItem={(item) => {
+          handleSelectSearchItem(item);
+        }}
+        onNavigateToItem={(item) => {
+          setDestItem(item);
+          setDirectionsOpen(true);
+          setSavedSheetOpen(false);
+        }}
+        onRemoveSaved={(key) => {
+          setSavedKeys((prev) => toggleSavedPlace(prev, key));
+        }}
+        onClearRecent={() => setRecentKeys([])}
+        onSeedDefaults={() => {
+          setSavedKeys(DEFAULT_SAVED_KEYS);
+          setLocationNotice('Added UM campus essentials to Saved');
+        }}
+        onClose={() => setSavedSheetOpen(false)}
+      />
+
+      {!directionsOpen && !navActive && !savedSheetOpen && (
         <InspectorPanel
           faculty={activeFaculty}
           building={activeBuilding}
@@ -1103,6 +1452,9 @@ export function App() {
           transitRoutes={transitData.routes}
           activeFloor={activeFloor}
           xrayEnabled={xrayEnabled}
+          isSaved={isActivePlaceSaved}
+          onToggleSave={handleToggleSaveActivePlace}
+          onSharePlace={handleShareActivePlace}
           onToggleXray={() => setXrayEnabled((v) => !v)}
           onSelectBuilding={selectBuilding}
           onSelectRoom={selectRoom}
@@ -1115,7 +1467,12 @@ export function App() {
           }}
           onClearRoom={() => setActiveRoom(null)}
           onNavigateTo={handleNavigateTo}
+          onNavigateToCoord={handleNavigateToCoord}
           onSetOrigin={handleSetOriginTarget}
+          onHighlightTransitRoute={(routeId) => {
+            handleHighlightTransitRoute(routeId);
+            setLocationNotice(`Highlighted ${routeId} on 3D map`);
+          }}
           onClose={clearSelection}
         />
       )}
@@ -1129,6 +1486,7 @@ export function App() {
         mode={routeMode}
         stepFree={stepFree}
         route={computedRoute}
+        modeComparison={modeComparison}
         pickTarget={pickTarget}
         hasUserLocation={Boolean(userLocation)}
         locating={locating}
@@ -1148,13 +1506,13 @@ export function App() {
         onToggleStepFree={setStepFree}
         onTogglePickTarget={(t) => setPickTarget((prev) => (prev === t ? null : t))}
         onStartNavigation={handleStartNavigation}
+        onShareRoute={handleShareRoute}
         onSelectStep={handleSelectStep}
         onClose={() => {
           setDirectionsOpen(false);
           setPickTarget(null);
         }}
       />
-
 
       {navActive && computedRoute && (
         <LiveNavHud
@@ -1166,6 +1524,7 @@ export function App() {
           remainingDistanceM={liveNavState.remainingDistanceM}
           remainingMinutes={liveNavState.remainingMinutes}
           progressFraction={liveNavState.progressFraction}
+          totalGeomM={routeMetrics.totalGeomM}
           isSimulating={navSimulating}
           isPaused={navPaused}
           simSpeed={navSimSpeed}
@@ -1174,6 +1533,10 @@ export function App() {
           gpsError={gpsError}
           arrived={liveNavState.arrived}
           speedMps={currentSpeedMps}
+          onScrubProgressM={(meters) => {
+            if (!navSimulating) setNavSimulating(true);
+            setNavProgressM(meters);
+          }}
           onTogglePause={() => setNavPaused((v) => !v)}
           onToggleSpeed={() => setNavSimSpeed((s) => (s === 1 ? 3 : 1))}
           onToggleSource={() => {
@@ -1208,12 +1571,31 @@ export function App() {
         onClose={() => setZoneDirectoryOpen(false)}
       />
 
+      <TransitHubModal
+        open={transitHubOpen}
+        routes={transitData.routes}
+        highlightedRouteId={highlightedTransitId}
+        onHighlightRoute={handleHighlightTransitRoute}
+        onSelectStop={(stop, route) => {
+          setTransitHubOpen(false);
+          sendCamera({ center: stop.coord, zoom: 17.8, pitch: 54 });
+          setLocationNotice(`${route.code} · ${stop.name}`);
+        }}
+        onNavigateToStop={(stop) => {
+          setTransitHubOpen(false);
+          handleNavigateToCoord(stop.coord, stop.name);
+        }}
+        onClose={() => setTransitHubOpen(false)}
+      />
+
       <LayerControls
         open={layersOpen && !isMapBusy}
         visibility={visibility}
         is3D={is3D}
+        darkMode={darkMode}
         onToggleLayer={(key) => setVisibility((v) => ({ ...v, [key]: !v[key] }))}
         onToggle3D={() => setIs3D((v) => !v)}
+        onToggleDarkMode={() => setDarkMode((v) => !v)}
         onResetCampus={resetToCampus}
         onClose={() => setLayersOpen(false)}
         stats={{
@@ -1238,12 +1620,33 @@ export function App() {
         </button>
         <button
           type="button"
-          className="mobile-bar__item"
+          className={`mobile-bar__item${zoneDirectoryOpen ? ' is-active' : ''}`}
           onClick={() => setZoneDirectoryOpen(true)}
           disabled={navActive}
         >
           <Icon name="zones" size={20} />
           Explore
+        </button>
+        <button
+          type="button"
+          className={`mobile-bar__item${transitHubOpen || Boolean(highlightedTransitId) ? ' is-active' : ''}`}
+          onClick={() => setTransitHubOpen(true)}
+          disabled={navActive}
+        >
+          <Icon name="bus" size={20} />
+          Transit
+        </button>
+        <button
+          type="button"
+          className={`mobile-bar__item${savedSheetOpen ? ' is-active' : ''}`}
+          onClick={() => {
+            setSavedSheetOpen((v) => !v);
+            setDirectionsOpen(false);
+          }}
+          disabled={navActive}
+        >
+          <Icon name={savedKeys.length > 0 ? 'bookmarkFilled' : 'bookmark'} size={20} />
+          Saved
         </button>
         <button
           type="button"
@@ -1288,5 +1691,3 @@ export function App() {
 }
 
 export default App;
-
-

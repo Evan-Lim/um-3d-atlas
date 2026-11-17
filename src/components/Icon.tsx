@@ -1,11 +1,7 @@
 import type { CSSProperties, ReactNode } from 'react';
 
 /**
- * A small, hand-rolled icon set.
- *
- * The atlas only needs a few dozen glyphs, so shipping a full icon package was
- * unnecessary weight. Everything is a 24x24 stroked path that inherits colour
- * and size from CSS.
+ * Material 3 expressive stroke & filled glyph set for the UM 3D Atlas.
  */
 export type IconName =
   | 'search'
@@ -25,6 +21,7 @@ export type IconName =
   | 'arrowUp'
   | 'swap'
   | 'checkCircle'
+  | 'check'
   | 'locate'
   | 'pause'
   | 'play'
@@ -38,7 +35,14 @@ export type IconName =
   | 'database'
   | 'crosshair'
   | 'radio'
-  | 'globe';
+  | 'globe'
+  | 'bookmark'
+  | 'bookmarkFilled'
+  | 'share'
+  | 'sun'
+  | 'moon'
+  | 'clock'
+  | 'compass';
 
 const PATHS: Record<IconName, ReactNode> = {
   search: (
@@ -132,6 +136,7 @@ const PATHS: Record<IconName, ReactNode> = {
       <path d="m8.2 12.4 2.6 2.6 5-5.4" />
     </>
   ),
+  check: <path d="m5 12.5 4.5 4.5 9.5-10" />,
   locate: (
     <>
       <circle cx="12" cy="12" r="3" />
@@ -216,8 +221,45 @@ const PATHS: Record<IconName, ReactNode> = {
       <path d="M12 3c2.4 2.5 3.6 5.5 3.6 9s-1.2 6.5-3.6 9c-2.4-2.5-3.6-5.5-3.6-9S9.6 5.5 12 3Z" />
     </>
   ),
+  bookmark: (
+    <path d="M6 4.5A1.5 1.5 0 0 1 7.5 3h9A1.5 1.5 0 0 1 18 4.5v16l-6-3.8-6 3.8v-16Z" />
+  ),
+  bookmarkFilled: (
+    <path
+      d="M6 4.5A1.5 1.5 0 0 1 7.5 3h9A1.5 1.5 0 0 1 18 4.5v16l-6-3.8-6 3.8v-16Z"
+      fill="currentColor"
+    />
+  ),
+  share: (
+    <>
+      <circle cx="18" cy="5" r="2.5" />
+      <circle cx="6" cy="12" r="2.5" />
+      <circle cx="18" cy="19" r="2.5" />
+      <path d="m8.3 13.3 7.4 4.4M15.7 6.3 8.3 10.7" />
+    </>
+  ),
+  sun: (
+    <>
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2.5v2.2M12 19.3v2.2M4.9 4.9l1.6 1.6M17.5 17.5l1.6 1.6M2.5 12h2.2M19.3 12h2.2M4.9 19.1l1.6-1.6M17.5 6.5l1.6-1.6" />
+    </>
+  ),
+  moon: (
+    <path d="M20.2 14.8A8.5 8.5 0 0 1 9.2 3.8a8.5 8.5 0 1 0 11 11Z" />
+  ),
+  clock: (
+    <>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M12 7.5V12l3.2 2" />
+    </>
+  ),
+  compass: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <polygon points="15.8,8.2 13.4,13.4 8.2,15.8 10.6,10.6" />
+    </>
+  ),
 };
-
 
 export interface IconProps {
   name: IconName;
@@ -227,7 +269,7 @@ export interface IconProps {
   style?: CSSProperties;
 }
 
-export function Icon({ name, size = 20, strokeWidth = 1.7, className, style }: IconProps) {
+export function Icon({ name, size = 20, strokeWidth = 1.75, className, style }: IconProps) {
   return (
     <svg
       className={className}

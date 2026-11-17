@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon, type IconName } from './Icon';
+import { computeWalkMetrics, type ModeComparison } from '../utils/atlasUtils';
 import type { ComputedRoute, RouteMode, RouteStep, SearchItem } from '../types/map';
 
 interface DirectionsPanelProps {
@@ -11,6 +12,7 @@ interface DirectionsPanelProps {
   mode: RouteMode;
   stepFree: boolean;
   route: ComputedRoute | null;
+  modeComparison: ModeComparison;
   pickTarget: 'origin' | 'destination' | null;
   hasUserLocation: boolean;
   locating: boolean;
@@ -22,6 +24,7 @@ interface DirectionsPanelProps {
   onToggleStepFree: (enabled: boolean) => void;
   onTogglePickTarget: (target: 'origin' | 'destination') => void;
   onStartNavigation: () => void;
+  onShareRoute: () => void;
   onSelectStep: (step: RouteStep) => void;
   onClose: () => void;
 }
@@ -117,7 +120,7 @@ function EndpointInput({
               onSelect(null);
               setText('');
             }}
-            aria-label="Clear"
+            aria-label={badge === 'A' ? 'Clear starting point' : 'Clear destination'}
           >
             <Icon name="close" size={13} />
           </button>
@@ -126,7 +129,13 @@ function EndpointInput({
           type="button"
           className={`m3-icon-btn m3-icon-btn--sm${picking ? ' m3-icon-btn--tonal' : ''}`}
           onClick={onTogglePick}
-          aria-label={picking ? 'Cancel map selection' : 'Select on map'}
+          aria-label={
+            picking
+              ? 'Cancel map selection'
+              : badge === 'A'
+                ? 'Pick starting point on map'
+                : 'Pick destination on map'
+          }
         >
           <Icon name="crosshair" size={15} />
         </button>
@@ -136,7 +145,7 @@ function EndpointInput({
         <div className="endpoint__suggest m3-scroll">
           {suggestions.map((it) => (
             <button
-              key={it.id}
+              key={`${it.kind}:${it.id}`}
               type="button"
               className="endpoint__suggest-item"
               onMouseDown={(e) => {
@@ -165,6 +174,7 @@ export function DirectionsPanel({
   mode,
   stepFree,
   route,
+  modeComparison,
   pickTarget,
   hasUserLocation,
   locating,
@@ -176,6 +186,7 @@ export function DirectionsPanel({
   onToggleStepFree,
   onTogglePickTarget,
   onStartNavigation,
+  onShareRoute,
   onSelectStep,
   onClose,
 }: DirectionsPanelProps) {
@@ -208,6 +219,8 @@ export function DirectionsPanel({
     }
     return out;
   }, [items]);
+
+  const walkMetrics = useMemo(() => computeWalkMetrics(route), [route]);
 
   const [collapsed, setCollapsed] = useState(false);
   const wasPickingRef = useRef(false);
@@ -245,7 +258,7 @@ export function DirectionsPanel({
             Directions
           </p>
           <p className="m3-caption">
-            {pickTarget ? 'Tap the map to set a point' : 'Campus walking, shuttle and driving'}
+            {pickTarget ? 'Tap the map to set a point' : 'Multi-modal campus walking, shuttle and driving'}
           </p>
         </div>
         <button type="button" className="m3-icon-btn" onClick={onClose} aria-label="Close directions">
@@ -255,26 +268,35 @@ export function DirectionsPanel({
 
       <div className="directions__form">
         <div className="m3-segmented" role="tablist" aria-label="Travel mode">
-          {MODES.map(({ id, label, icon }) => (
-            <button
-              key={id}
-              type="button"
-              role="tab"
-              aria-selected={mode === id}
-              className={`m3-segmented__item${mode === id ? ' is-active' : ''}`}
-              onClick={() => onChangeMode(id)}
-            >
-              <Icon name={icon} size={15} />
-              {label}
-            </button>
-          ))}
+          {MODES.map(({ id, label, icon }) => {
+            const candidate = modeComparison[id];
+            const estMin = candidate ? Math.max(1, Math.round(candidate.estimatedMinutes)) : null;
+            return (
+              <button
+                key={id}
+                type="button"
+                role="tab"
+                aria-selected={mode === id}
+                className={`m3-segmented__item${mode === id ? ' is-active' : ''}`}
+                onClick={() => onChangeMode(id)}
+              >
+                <Icon name={icon} size={15} />
+                <span>{label}</span>
+                {estMin !== null && (
+                  <span className="m3-mono" style={{ fontSize: 11, opacity: mode === id ? 0.95 : 0.68 }}>
+                    {estMin}m
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>
 
         {mode !== 'drive' && (
           <label className="m3-switch" style={{ padding: '2px 4px' }}>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 12.5 }}>
               <Icon name="accessible" size={15} />
-              Step-free route
+              Step-free route (avoid stairs)
             </span>
             <input
               type="checkbox"
@@ -330,7 +352,6 @@ export function DirectionsPanel({
         </div>
       </div>
 
-
       <div className="directions__body m3-scroll">
         {!origin || !destination ? (
           <>
@@ -372,56 +393,84 @@ export function DirectionsPanel({
         ) : (
           <>
             <div className="route-summary">
-              <div style={{ minWidth: 0 }}>
+              <div style={{ minWidth: 0, flex: 1 }}>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-                  <span className="route-summary__time">
+                  <span className="route-summary__time m3-mono">
                     {Math.max(1, Math.round(route.estimatedMinutes))} min
                   </span>
-                  <span className="route-summary__dist">{formatDistance(route.totalDistanceM)}</span>
+                  <span className="route-summary__dist m3-mono">{formatDistance(route.totalDistanceM)}</span>
                 </div>
-                <div className="chip-wrap" style={{ marginTop: 6 }}>
-                  {route.busRoutesUsed.map((code) => (
-                    <span
-                      key={code}
-                      className="m3-tag"
-                      style={{ background: 'rgba(255,255,255,0.72)', color: 'var(--on-primary-container)' }}
-                    >
-                      <Icon name="bus" size={12} />
-                      {code}
-                    </span>
-                  ))}
+                <div className="m3-meta-line" style={{ marginTop: 6, color: 'var(--on-primary-container)' }}>
+                  {route.busRoutesUsed.length > 0 && (
+                    <span>Bus {route.busRoutesUsed.join(' → ')}</span>
+                  )}
                   {route.shortcutCount > 0 && (
-                    <span
-                      className="m3-tag"
-                      style={{ background: 'rgba(255,255,255,0.72)', color: 'var(--on-primary-container)' }}
-                    >
-                      {route.shortcutCount} shortcut{route.shortcutCount > 1 ? 's' : ''}
-                    </span>
+                    <>
+                      {route.busRoutesUsed.length > 0 && <span aria-hidden="true">·</span>}
+                      <span>
+                        {route.shortcutCount} covered shortcut{route.shortcutCount > 1 ? 's' : ''}
+                      </span>
+                    </>
                   )}
                   {route.mode === 'walk' && (
-                    <span
-                      className="m3-tag"
-                      style={{ background: 'rgba(255,255,255,0.72)', color: 'var(--on-primary-container)' }}
-                    >
-                      {route.stepsCount > 0 ? `${route.stepsCount} stairs` : 'Step-free'}
-                    </span>
+                    <>
+                      {(route.busRoutesUsed.length > 0 || route.shortcutCount > 0) && (
+                        <span aria-hidden="true">·</span>
+                      )}
+                      <span>{route.stepsCount > 0 ? `${route.stepsCount} stairs` : 'Step-free path'}</span>
+                    </>
                   )}
                 </div>
               </div>
-              <button
-                type="button"
-                className="m3-btn m3-btn--filled route-summary__start"
-                onClick={onStartNavigation}
-              >
-                <Icon name="directions" size={16} />
-                Start
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                <button
+                  type="button"
+                  className="m3-icon-btn m3-icon-btn--sm"
+                  onClick={onShareRoute}
+                  title="Copy route link"
+                  aria-label="Share route link"
+                  style={{ color: 'var(--on-primary-container)' }}
+                >
+                  <Icon name="share" size={16} />
+                </button>
+                <button
+                  type="button"
+                  className="m3-btn m3-btn--filled route-summary__start"
+                  onClick={onStartNavigation}
+                >
+                  <Icon name="directions" size={16} />
+                  Start
+                </button>
+              </div>
             </div>
+
+            {route.mode === 'walk' && walkMetrics.stepsEstimate > 0 && (
+              <div className="walk-metrics-strip">
+                <div className="walk-metrics-strip__item">
+                  <span className="walk-metrics-strip__val m3-mono">
+                    ~{walkMetrics.stepsEstimate.toLocaleString()}
+                  </span>
+                  <span className="walk-metrics-strip__lbl">steps</span>
+                </div>
+                <span className="walk-metrics-strip__div" aria-hidden="true" />
+                <div className="walk-metrics-strip__item">
+                  <span className="walk-metrics-strip__val m3-mono">{walkMetrics.kcalEstimate} kcal</span>
+                  <span className="walk-metrics-strip__lbl">active burn</span>
+                </div>
+                <span className="walk-metrics-strip__div" aria-hidden="true" />
+                <div className="walk-metrics-strip__item">
+                  <span className="walk-metrics-strip__val m3-mono">
+                    {Math.round(walkMetrics.coveredRatio * 100)}%
+                  </span>
+                  <span className="walk-metrics-strip__lbl">covered / indoor</span>
+                </div>
+              </div>
+            )}
 
             <div className="section" style={{ gap: 4 }}>
               <div className="section__title">
                 <span>Route steps</span>
-                <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>
+                <span className="m3-mono" style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>
                   {route.steps.length}
                 </span>
               </div>

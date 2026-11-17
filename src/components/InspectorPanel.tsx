@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Icon } from './Icon';
 import { zoneAccent, zoneKindLabel } from '../theme';
+import { findNearbyStops } from '../utils/atlasUtils';
 import type { BuildingProps, FacultyProps, RoomProps, SearchItem, TransitRoute } from '../types/map';
 
 interface InspectorPanelProps {
@@ -13,6 +14,10 @@ interface InspectorPanelProps {
   transitRoutes: TransitRoute[];
   activeFloor: number | 'all';
   xrayEnabled: boolean;
+  isSaved: boolean;
+  onToggleSave: () => void;
+  onSharePlace: () => void;
+  onHighlightTransitRoute: (routeId: string) => void;
   onToggleXray: () => void;
   onSelectBuilding: (b: BuildingProps) => void;
   onSelectRoom: (r: RoomProps) => void;
@@ -21,6 +26,7 @@ interface InspectorPanelProps {
   onClearBuilding: () => void;
   onClearRoom: () => void;
   onNavigateTo: (target: { kind: 'faculty' | 'building' | 'room' | 'poi'; id: string }) => void;
+  onNavigateToCoord: (coord: [number, number], title: string) => void;
   onSetOrigin: (target: { kind: 'faculty' | 'building' | 'room' | 'poi'; id: string }) => void;
   onClose: () => void;
 }
@@ -42,6 +48,10 @@ export function InspectorPanel({
   transitRoutes,
   activeFloor,
   xrayEnabled,
+  isSaved,
+  onToggleSave,
+  onSharePlace,
+  onHighlightTransitRoute,
   onToggleXray,
   onSelectBuilding,
   onSelectRoom,
@@ -50,15 +60,25 @@ export function InspectorPanel({
   onClearBuilding,
   onClearRoom,
   onNavigateTo,
+  onNavigateToCoord,
   onSetOrigin,
   onClose,
 }: InspectorPanelProps) {
   const [collapsed, setCollapsed] = useState(false);
+  const [roomFilter, setRoomFilter] = useState('');
   const selectionKey = `${faculty?.id ?? ''}|${building?.id ?? ''}|${room?.id ?? ''}|${poi?.id ?? ''}`;
 
   useEffect(() => {
     setCollapsed(false);
+    setRoomFilter('');
   }, [selectionKey]);
+
+  const targetCoord = room?.center ?? building?.center ?? poi?.center ?? faculty?.center ?? null;
+
+  const nearbyStops = useMemo(() => {
+    if (!targetCoord || poi?.kind === 'bus_stop') return [];
+    return findNearbyStops(targetCoord, transitRoutes, 680, 3);
+  }, [targetCoord, transitRoutes, poi?.kind]);
 
   if (!faculty && !building && !room && !poi) return null;
 
@@ -78,7 +98,17 @@ export function InspectorPanel({
     floorsMap.set(r.floor, arr);
   }
   const sortedFloors = Array.from(floorsMap.keys()).sort((a, b) => b - a);
-  const roomsForFloor = activeFloor === 'all' ? buildingRooms : floorsMap.get(activeFloor) ?? [];
+  const rawRoomsForFloor = activeFloor === 'all' ? buildingRooms : floorsMap.get(activeFloor) ?? [];
+  const roomsForFloor = roomFilter.trim()
+    ? rawRoomsForFloor.filter((r) => {
+        const q = roomFilter.trim().toLowerCase();
+        return (
+          r.name.toLowerCase().includes(q) ||
+          r.code.toLowerCase().includes(q) ||
+          r.room_type.toLowerCase().includes(q)
+        );
+      })
+    : rawRoomsForFloor;
 
   const servingRoutes = poi
     ? transitRoutes.filter(
@@ -148,16 +178,29 @@ export function InspectorPanel({
         </span>
         <div className="inspector__head-body">
           <div className="inspector__kind">
-            <span className="m3-tag m3-tag--primary">
-              {room
-                ? room.floor_label
-                : building
-                  ? 'Building'
-                  : poi
-                    ? POI_KIND_LABEL[poi.kind] ?? 'Place'
-                    : zoneKindLabel(faculty?.zone_kind)}
+            <span className="m3-meta-line">
+              <span>
+                {room
+                  ? room.floor_label
+                  : building
+                    ? 'Building'
+                    : poi
+                      ? POI_KIND_LABEL[poi.kind] ?? 'Place'
+                      : zoneKindLabel(faculty?.zone_kind)}
+              </span>
+              {building?.has_rooms && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span>Indoor 3D rooms</span>
+                </>
+              )}
+              {faculty?.established && !building && !room && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span>Est. {faculty.established}</span>
+                </>
+              )}
             </span>
-            {building?.has_rooms && <span className="m3-tag">Indoor rooms</span>}
           </div>
           <h2 className="inspector__name">{title}</h2>
           {alt && alt !== title && <p className="inspector__name-alt">{alt}</p>}
@@ -175,6 +218,25 @@ export function InspectorPanel({
         <button type="button" className="m3-btn m3-btn--tonal" onClick={() => onSetOrigin(actionTarget)}>
           <Icon name="pin" size={16} />
           Set start
+        </button>
+        <button
+          type="button"
+          className={`m3-icon-btn ${isSaved ? 'm3-icon-btn--tonal' : 'm3-btn--outlined'}`}
+          onClick={onToggleSave}
+          title={isSaved ? 'Remove from saved' : 'Save place'}
+          aria-label={isSaved ? 'Remove from saved places' : 'Save place'}
+          aria-pressed={isSaved}
+        >
+          <Icon name={isSaved ? 'bookmarkFilled' : 'bookmark'} size={16} />
+        </button>
+        <button
+          type="button"
+          className="m3-icon-btn m3-btn--outlined"
+          onClick={onSharePlace}
+          title="Copy link to place"
+          aria-label="Share link to place"
+        >
+          <Icon name="share" size={16} />
         </button>
       </div>
 
@@ -254,11 +316,34 @@ export function InspectorPanel({
             {building.has_rooms && (
               <div className="section">
                 <div className="section__title">
-                  <span>Rooms</span>
-                  <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>
-                    {buildingRooms.length}
+                  <span>Indoor Rooms</span>
+                  <span className="m3-mono" style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>
+                    {roomsForFloor.length} / {buildingRooms.length}
                   </span>
                 </div>
+
+                {buildingRooms.length > 5 && (
+                  <div className="m3-field m3-field--compact">
+                    <Icon name="search" size={15} />
+                    <input
+                      value={roomFilter}
+                      onChange={(e) => setRoomFilter(e.target.value)}
+                      placeholder="Filter rooms by name, code or type"
+                      aria-label="Filter rooms in building"
+                    />
+                    {roomFilter && (
+                      <button
+                        type="button"
+                        className="m3-icon-btn m3-icon-btn--sm"
+                        onClick={() => setRoomFilter('')}
+                        aria-label="Clear room filter"
+                      >
+                        <Icon name="close" size={13} />
+                      </button>
+                    )}
+                  </div>
+                )}
+
                 <div className="floor-strip">
                   <button
                     type="button"
@@ -300,7 +385,7 @@ export function InspectorPanel({
                       <span className="room-row__type">{r.room_type.replace(/_/g, ' ')}</span>
                     </button>
                   ))}
-                  {roomsForFloor.length === 0 && <p className="m3-caption">No rooms recorded on this floor.</p>}
+                  {roomsForFloor.length === 0 && <p className="m3-caption">No matching rooms on this floor.</p>}
                 </div>
               </div>
             )}
@@ -314,19 +399,15 @@ export function InspectorPanel({
           </>
         )}
 
-
         {faculty && !building && (
           <>
-            <div className="chip-wrap">
-              {faculty.established && <span className="m3-tag m3-tag--primary">Est. {faculty.established}</span>}
-              {faculty.capacity_stats && <span className="m3-tag">{faculty.capacity_stats}</span>}
-              {faculty.dean_or_office && (
-                <span className="m3-tag">
-                  <Icon name="pin" size={12} />
-                  {faculty.dean_or_office}
-                </span>
-              )}
-            </div>
+            {(faculty.capacity_stats || faculty.dean_or_office) && (
+              <div className="m3-meta-line">
+                {faculty.capacity_stats && <span>{faculty.capacity_stats}</span>}
+                {faculty.capacity_stats && faculty.dean_or_office && <span aria-hidden="true">·</span>}
+                {faculty.dean_or_office && <span>{faculty.dean_or_office}</span>}
+              </div>
+            )}
 
             {(faculty.description || faculty.history) && (
               <div className="zone-description">
@@ -339,13 +420,9 @@ export function InspectorPanel({
 
             {faculty.departments && faculty.departments.length > 0 && (
               <div className="section">
-                <p className="section__title">Departments</p>
-                <div className="chip-wrap">
-                  {faculty.departments.map((d) => (
-                    <span key={d} className="m3-tag m3-tag--outline">
-                      {d}
-                    </span>
-                  ))}
+                <p className="section__title">Departments ({faculty.departments.length})</p>
+                <div className="m3-text-list">
+                  {faculty.departments.join(' · ')}
                 </div>
               </div>
             )}
@@ -353,12 +430,8 @@ export function InspectorPanel({
             {faculty.facilities && faculty.facilities.length > 0 && (
               <div className="section">
                 <p className="section__title">Facilities</p>
-                <div className="chip-wrap">
-                  {faculty.facilities.map((f) => (
-                    <span key={f} className="m3-tag">
-                      {f}
-                    </span>
-                  ))}
+                <div className="m3-text-list">
+                  {faculty.facilities.join(' · ')}
                 </div>
               </div>
             )}
@@ -376,7 +449,7 @@ export function InspectorPanel({
             <div className="section">
               <p className="section__title">
                 <span>Buildings</span>
-                <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>
+                <span className="m3-mono" style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>
                   {facultyBuildings.length}
                 </span>
               </p>
@@ -391,10 +464,10 @@ export function InspectorPanel({
                     </span>
                     <span className="zone-building__meta" style={{ display: 'block' }}>
                       {b.levels} {b.levels === 1 ? 'level' : 'levels'}
-                      {b.has_rooms ? ' · indoor rooms' : ''}
+                      {b.has_rooms ? ' · 3D indoor rooms' : ''}
                     </span>
                   </span>
-                  {b.has_rooms && <span className="m3-tag m3-tag--primary">3D</span>}
+                  <Icon name="chevronRight" size={14} />
                 </button>
               ))}
               {facultyBuildings.length === 0 && (
@@ -411,9 +484,14 @@ export function InspectorPanel({
             </div>
             {servingRoutes.length > 0 && (
               <div className="section">
-                <p className="section__title">Serving routes</p>
+                <p className="section__title">Serving bus & shuttle lines</p>
                 {servingRoutes.map((tr) => (
-                  <div key={tr.id} className="zone-building" style={{ cursor: 'default' }}>
+                  <button
+                    key={tr.id}
+                    type="button"
+                    className="zone-building"
+                    onClick={() => onHighlightTransitRoute(tr.id)}
+                  >
                     <span className="room-row__icon" style={{ background: tr.color, color: '#fff' }}>
                       <Icon name="bus" size={15} />
                     </span>
@@ -425,12 +503,62 @@ export function InspectorPanel({
                         {tr.operator} · every {tr.headway_min} min · {tr.hours}
                       </span>
                     </span>
-                  </div>
+                    <Icon name="chevronRight" size={14} />
+                  </button>
                 ))}
               </div>
             )}
-            <p className="m3-caption">Use Directions to plan a trip from here.</p>
           </>
+        )}
+
+        {nearbyStops.length > 0 && (
+          <div className="section">
+            <div className="section__title">
+              <span>Nearest Transit Stops</span>
+              <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>Walk access</span>
+            </div>
+            {nearbyStops.map((stop) => (
+              <div key={`${stop.name}-${stop.coord[0]}`} className="nearby-stop-card">
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div className="nearby-stop-card__title">{stop.name}</div>
+                  <div className="nearby-stop-card__meta">
+                    <span className="m3-mono">{stop.distanceM} m</span>
+                    <span aria-hidden="true">·</span>
+                    <span>~{stop.walkMinutes} min walk</span>
+                    {stop.ref && (
+                      <>
+                        <span aria-hidden="true">·</span>
+                        <span className="m3-mono">{stop.ref}</span>
+                      </>
+                    )}
+                  </div>
+                  <div className="nearby-stop-card__routes">
+                    {stop.routes.map((r) => (
+                      <button
+                        key={r.id}
+                        type="button"
+                        className="transit-mini-pill"
+                        style={{ borderColor: r.color, color: r.color }}
+                        onClick={() => onHighlightTransitRoute(r.id)}
+                        title={`Highlight ${r.name} on map`}
+                      >
+                        {r.code}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="m3-icon-btn m3-icon-btn--sm m3-icon-btn--tonal"
+                  onClick={() => onNavigateToCoord(stop.coord, stop.name)}
+                  title={`Walk to ${stop.name}`}
+                  aria-label={`Directions to ${stop.name}`}
+                >
+                  <Icon name="directions" size={14} />
+                </button>
+              </div>
+            ))}
+          </div>
         )}
       </div>
     </aside>

@@ -6,8 +6,10 @@ interface LayerControlsProps {
   open: boolean;
   visibility: MapLayerVisibility;
   is3D: boolean;
+  darkMode: boolean;
   onToggleLayer: (key: keyof MapLayerVisibility) => void;
   onToggle3D: () => void;
+  onToggleDarkMode: () => void;
   onResetCampus: () => void;
   onClose: () => void;
   stats: {
@@ -23,20 +25,22 @@ interface LayerControlsProps {
 const LAYERS: { key: keyof MapLayerVisibility; label: string; color: string }[] = [
   { key: 'boundary', label: 'Campus boundary', color: '#24439c' },
   { key: 'faculties', label: 'Faculty zones', color: '#2f5bb7' },
-  { key: 'buildings3d', label: 'Buildings', color: '#9aa3b8' },
+  { key: 'buildings3d', label: '3D Buildings & rooms', color: '#9aa3b8' },
   { key: 'roads', label: 'Roads', color: '#7d8597' },
-  { key: 'pathways', label: 'Footpaths', color: '#4f8fa8' },
-  { key: 'busRoutes', label: 'Transit lines', color: '#0c6a5e' },
+  { key: 'pathways', label: 'Footpaths & shortcuts', color: '#4f8fa8' },
+  { key: 'busRoutes', label: 'Transit & shuttle lines', color: '#0c6a5e' },
   { key: 'pois', label: 'Transit stops & gates', color: '#5c6fa8' },
-  { key: 'labels', label: 'Labels', color: '#171a21' },
+  { key: 'labels', label: 'Map labels', color: '#171a21' },
 ];
 
 export function LayerControls({
   open,
   visibility,
   is3D,
+  darkMode,
   onToggleLayer,
   onToggle3D,
+  onToggleDarkMode,
   onResetCampus,
   onClose,
   stats,
@@ -50,9 +54,11 @@ export function LayerControls({
       <div className="layers-panel__head">
         <div>
           <p className="m3-subtitle" style={{ fontWeight: 600 }}>
-            Map layers
+            Map layers & appearance
           </p>
-          <p className="m3-caption">{is3D ? '3D campus view' : 'Flat 2D view'}</p>
+          <p className="m3-caption">
+            {is3D ? '3D perspective' : 'Flat 2D'} · {darkMode ? 'M3 Dark' : 'M3 Light'}
+          </p>
         </div>
         <button type="button" className="m3-icon-btn m3-icon-btn--sm" onClick={onClose} aria-label="Close layers">
           <Icon name="close" size={16} />
@@ -82,16 +88,31 @@ export function LayerControls({
           <label className="layer-row">
             <span className="layer-row__label">
               <Icon name="box" size={15} />
-              3D buildings
+              3D buildings & pitch
             </span>
             <span className="m3-switch">
               <input type="checkbox" checked={is3D} onChange={onToggle3D} aria-label="Toggle 3D view" />
               <span className="m3-switch__track" />
             </span>
           </label>
-          <button type="button" className="m3-btn m3-btn--text m3-btn--sm" onClick={onResetCampus} style={{ marginTop: 4 }}>
+          <label className="layer-row">
+            <span className="layer-row__label">
+              <Icon name={darkMode ? 'moon' : 'sun'} size={15} />
+              Dark theme (Material 3)
+            </span>
+            <span className="m3-switch">
+              <input type="checkbox" checked={darkMode} onChange={onToggleDarkMode} aria-label="Toggle dark mode" />
+              <span className="m3-switch__track" />
+            </span>
+          </label>
+          <button
+            type="button"
+            className="m3-btn m3-btn--text m3-btn--sm"
+            onClick={onResetCampus}
+            style={{ marginTop: 4 }}
+          >
             <Icon name="reset" size={15} />
-            Reset view
+            Reset camera view
           </button>
         </div>
 
@@ -105,7 +126,7 @@ export function LayerControls({
           >
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
               <Icon name="database" size={15} />
-              Campus data
+              Campus dataset
             </span>
             <Icon name={sourcesOpen ? 'chevronDown' : 'chevronRight'} size={14} />
           </button>

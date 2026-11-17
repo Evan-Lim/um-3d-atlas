@@ -13,23 +13,26 @@ export type SearchFilterChip =
 
 interface SearchBarProps {
   items: SearchItem[];
+  savedKeys: string[];
+  recentKeys: string[];
   directionsOpen: boolean;
   navActive: boolean;
+  hasLeftSheet: boolean;
   activeChip: SearchFilterChip;
   onChangeChip: (chip: SearchFilterChip) => void;
   onSelectItem: (item: SearchItem) => void;
   onOpenDirections: () => void;
-  /** Incrementing counter used by the navigation rail to focus the field. */
   focusSignal?: number;
 }
 
-const CHIPS: { id: SearchFilterChip; label: string }[] = [
-  { id: 'all', label: 'All' },
-  { id: 'faculty', label: 'Faculties' },
-  { id: 'college', label: 'KK' },
-  { id: 'institute', label: 'Institutes' },
-  { id: 'room', label: 'Rooms' },
-  { id: 'transit', label: 'Transit' },
+const CHIPS: { id: SearchFilterChip; label: string; icon: IconName }[] = [
+  { id: 'all', label: 'All', icon: 'zones' },
+  { id: 'faculty', label: 'Faculties', icon: 'graduation' },
+  { id: 'college', label: 'Colleges (KK)', icon: 'building' },
+  { id: 'institute', label: 'Institutes', icon: 'globe' },
+  { id: 'room', label: 'Rooms', icon: 'door' },
+  { id: 'transit', label: 'Transit', icon: 'bus' },
+  { id: 'gate', label: 'Gates', icon: 'pin' },
 ];
 
 const ICON_FOR_KIND: Record<string, IconName> = {
@@ -44,8 +47,11 @@ const ICON_FOR_KIND: Record<string, IconName> = {
 
 export function SearchBar({
   items,
+  savedKeys,
+  recentKeys,
   directionsOpen,
   navActive,
+  hasLeftSheet,
   activeChip,
   onChangeChip,
   onSelectItem,
@@ -64,6 +70,21 @@ export function SearchBar({
     setFocused(true);
   }, [focusSignal]);
 
+  // Global "/" shortcut to focus the Material 3 search bar
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== '/' || e.metaKey || e.ctrlKey || e.altKey) return;
+      const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+      if (navActive || directionsOpen) return;
+      e.preventDefault();
+      inputRef.current?.focus();
+      setFocused(true);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [navActive, directionsOpen]);
+
   useEffect(() => {
     const onDocClick = (e: MouseEvent) => {
       if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
@@ -73,6 +94,9 @@ export function SearchBar({
     document.addEventListener('mousedown', onDocClick);
     return () => document.removeEventListener('mousedown', onDocClick);
   }, []);
+
+  const savedSet = useMemo(() => new Set(savedKeys), [savedKeys]);
+  const recentSet = useMemo(() => new Set(recentKeys), [recentKeys]);
 
   const chipFiltered = useMemo(() => {
     if (activeChip === 'all') return items;
@@ -103,19 +127,32 @@ export function SearchBar({
     const q = query.trim().toLowerCase();
     if (!q) {
       if (activeChip !== 'all') return chipFiltered.slice(0, 24);
+
+      // Prioritize saved & recent items first when in "All" mode
+      const prioritized: SearchItem[] = [];
+      const seen = new Set<string>();
+      for (const key of [...savedKeys, ...recentKeys]) {
+        const found = items.find((i) => `${i.kind}:${i.id}` === key);
+        if (found && !seen.has(key)) {
+          seen.add(key);
+          prioritized.push(found);
+        }
+      }
+
       const featured = items.filter(
         (i) =>
-          i.kind === 'rail_station' ||
-          i.id === 'FSKTM' ||
-          i.id === 'FK' ||
-          i.id === 'KPPI' ||
-          i.id === 'IAS' ||
-          i.id === 'KK1' ||
-          i.id === 'KK12' ||
-          i.title.includes('Perpustakaan Utama') ||
-          i.title.includes('Dewan Tunku Canselor'),
+          !seen.has(`${i.kind}:${i.id}`) &&
+          (i.kind === 'rail_station' ||
+            i.id === 'FSKTM' ||
+            i.id === 'FK' ||
+            i.id === 'KPPI' ||
+            i.id === 'IAS' ||
+            i.id === 'KK1' ||
+            i.id === 'KK12' ||
+            i.title.includes('Perpustakaan Utama') ||
+            i.title.includes('Dewan Tunku Canselor')),
       );
-      return featured.slice(0, 8);
+      return [...prioritized, ...featured].slice(0, 10);
     }
 
     const tokens = q.split(/\s+/).filter(Boolean);
@@ -131,6 +168,8 @@ export function SearchBar({
       else if (titleL.includes(q)) score += 45;
       else score += 20;
 
+      const key = `${it.kind}:${it.id}`;
+      if (savedSet.has(key)) score += 18;
       if (it.kind === 'rail_station') score += 16;
       if (it.kind === 'faculty') score += 12;
       if (it.kind === 'building' && it.has_rooms) score += 8;
@@ -140,7 +179,7 @@ export function SearchBar({
     }
     scored.sort((a, b) => b.score - a.score || a.item.title.localeCompare(b.item.title));
     return scored.slice(0, 20).map((s) => s.item);
-  }, [query, activeChip, chipFiltered, items]);
+  }, [query, activeChip, chipFiltered, items, savedKeys, recentKeys, savedSet]);
 
   useEffect(() => {
     setHighlightIdx(0);
@@ -155,7 +194,6 @@ export function SearchBar({
   if (navActive || directionsOpen) return null;
 
   const activeChipLabel = CHIPS.find((c) => c.id === activeChip)?.label ?? 'All';
-
 
   return (
     <div className="search-dock" ref={wrapRef}>
@@ -188,11 +226,17 @@ export function SearchBar({
               setFocused(false);
             }
           }}
-          placeholder="Search buildings, rooms or zones"
+          placeholder="Search faculties, KK, rooms or bus stops"
           aria-label="Search Universiti Malaya"
           autoComplete="off"
           spellCheck={false}
         />
+
+        {!query && !focused && (
+          <kbd className="search-pill__kbd" aria-hidden="true">
+            /
+          </kbd>
+        )}
 
         {query && (
           <button
@@ -220,6 +264,31 @@ export function SearchBar({
         </button>
       </div>
 
+      {/* Persistent M3 Filter Chips Bar on map when dropdown & inspector are closed */}
+      {!focused && !hasLeftSheet && (
+        <div className="search-chips no-scrollbar" role="tablist" aria-label="Quick category filter">
+          {CHIPS.map((c) => {
+            const selected = activeChip === c.id;
+            return (
+              <button
+                key={c.id}
+                type="button"
+                role="tab"
+                aria-selected={selected}
+                className={`m3-chip m3-chip--elevated${selected ? ' is-selected' : ''}`}
+                onClick={() => {
+                  onChangeChip(c.id);
+                  setFocused(true);
+                }}
+              >
+                <Icon name={selected ? 'check' : c.icon} size={14} />
+                <span>{c.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {focused && (
         <div className="search-results">
           <div className="search-results__head">
@@ -227,52 +296,65 @@ export function SearchBar({
               {query.trim()
                 ? `${results.length} result${results.length === 1 ? '' : 's'}`
                 : activeChip === 'all'
-                  ? 'Suggested'
+                  ? 'Suggested & Saved Places'
                   : `${activeChipLabel} · ${results.length}`}
+            </span>
+            <span className="m3-mono" style={{ fontSize: 10.5, opacity: 0.72 }}>
+              ↑↓ Enter
             </span>
           </div>
           <div className="search-filter-row no-scrollbar" role="tablist" aria-label="Search filters">
-            {CHIPS.map((c) => (
-              <button
-                key={c.id}
-                type="button"
-                role="tab"
-                aria-selected={activeChip === c.id}
-                className={`m3-chip${activeChip === c.id ? ' is-selected' : ''}`}
-                onClick={() => onChangeChip(c.id)}
-              >
-                {c.label}
-              </button>
-            ))}
+            {CHIPS.map((c) => {
+              const selected = activeChip === c.id;
+              return (
+                <button
+                  key={c.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={selected}
+                  className={`m3-chip${selected ? ' is-selected' : ''}`}
+                  onClick={() => onChangeChip(c.id)}
+                >
+                  {selected && <Icon name="check" size={13} />}
+                  <span>{c.label}</span>
+                </button>
+              );
+            })}
           </div>
           {results.length === 0 ? (
             <div className="search-empty">No matches. Try FSKTM, KK12, KPPI, IAS or “library”.</div>
           ) : (
             <div className="search-results__list m3-scroll">
-              {results.map((it, idx) => (
-                <button
-                  key={`${it.kind}:${it.id}`}
-                  type="button"
-                  className={`search-result${idx === highlightIdx ? ' is-active' : ''}`}
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    pickItem(it);
-                  }}
-                  onMouseEnter={() => setHighlightIdx(idx)}
-                >
-                  <span className="search-result__icon">
-                    <Icon name={ICON_FOR_KIND[it.kind] ?? 'pin'} size={17} />
-                  </span>
-                  <span style={{ minWidth: 0, flex: 1 }}>
-                    <span className="search-result__title" style={{ display: 'block' }}>
-                      {it.title}
+              {results.map((it, idx) => {
+                const key = `${it.kind}:${it.id}`;
+                const isSaved = savedSet.has(key);
+                const isRecent = !isSaved && recentSet.has(key);
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    className={`search-result${idx === highlightIdx ? ' is-active' : ''}`}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      pickItem(it);
+                    }}
+                    onMouseEnter={() => setHighlightIdx(idx)}
+                  >
+                    <span className="search-result__icon">
+                      <Icon name={isSaved ? 'bookmarkFilled' : ICON_FOR_KIND[it.kind] ?? 'pin'} size={17} />
                     </span>
-                    <span className="search-result__sub" style={{ display: 'block' }}>
-                      {it.subtitle}
+                    <span style={{ minWidth: 0, flex: 1 }}>
+                      <span className="search-result__title" style={{ display: 'block' }}>
+                        {it.title}
+                      </span>
+                      <span className="search-result__sub" style={{ display: 'block' }}>
+                        {isSaved ? 'Saved · ' : isRecent ? 'Recent · ' : ''}
+                        {it.subtitle}
+                      </span>
                     </span>
-                  </span>
-                </button>
-              ))}
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>
@@ -280,4 +362,3 @@ export function SearchBar({
     </div>
   );
 }
-

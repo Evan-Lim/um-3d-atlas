@@ -45,6 +45,8 @@ interface UmMapCanvasProps {
   activeFloor: number | 'all';
   xrayEnabled: boolean;
   is3D: boolean;
+  darkMode: boolean;
+  highlightedTransitId: string | null;
   visibility: MapLayerVisibility;
   userLocation: UserLocation | null;
   route: ComputedRoute | null;
@@ -200,6 +202,8 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
     activeFloor,
     xrayEnabled,
     is3D,
+    darkMode,
+    highlightedTransitId,
     visibility,
     userLocation,
     route,
@@ -357,7 +361,7 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
         data: { type: 'FeatureCollection', features: [] },
       });
 
-      // 1. Outer campus dimming mask
+      // 1. Outer campus dimming mask & campus interior ground
       map.addLayer({
         id: 'um-outer-mask',
         type: 'fill',
@@ -366,6 +370,17 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
         paint: {
           'fill-color': '#e9edf6',
           'fill-opacity': 0.5,
+        },
+      });
+
+      map.addLayer({
+        id: 'um-campus-ground',
+        type: 'fill',
+        source: 'um-boundary',
+        filter: ['==', ['get', 'id'], 'um-boundary'],
+        paint: {
+          'fill-color': '#131722',
+          'fill-opacity': 0,
         },
       });
 
@@ -1249,6 +1264,9 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
 
     if (map.getLayer('um-buildings-3d')) {
       map.setFilter('um-buildings-3d', ['all', ['!=', ['get', 'id'], bId], ['!=', ['get', 'is_canopy'], true]]);
+      const baseHasRooms = darkMode ? '#2b3245' : '#fbfcff';
+      const baseDefault = darkMode ? '#1e2330' : '#eef1f8';
+      const inactiveFac = darkMode ? '#1a1f2c' : '#e6eaf3';
       map.setPaintProperty(
         'um-buildings-3d',
         'fill-extrusion-color',
@@ -1257,15 +1275,103 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
               'case',
               ['==', ['get', 'faculty_id'], activeFaculty.id],
               ['get', 'faculty_color'],
-              '#e6eaf3',
+              inactiveFac,
             ]
-          : ['case', ['==', ['get', 'has_rooms'], true], '#fbfcff', '#eef1f8'],
+          : ['case', ['==', ['get', 'has_rooms'], true], baseHasRooms, baseDefault],
       );
       map.setPaintProperty(
         'um-buildings-3d',
         'fill-extrusion-opacity',
-        activeBuilding ? 0.45 : activeFaculty ? 0.78 : 0.94,
+        activeBuilding ? 0.45 : activeFaculty ? 0.82 : 0.94,
       );
+    }
+
+    if (map.getLayer('um-outer-mask')) {
+      map.setPaintProperty('um-outer-mask', 'fill-color', darkMode ? '#0b0e15' : '#e9edf6');
+      map.setPaintProperty('um-outer-mask', 'fill-opacity', darkMode ? 0.84 : 0.5);
+    }
+    if (map.getLayer('um-campus-ground')) {
+      map.setPaintProperty('um-campus-ground', 'fill-color', darkMode ? '#141824' : '#f4f6fb');
+      map.setPaintProperty('um-campus-ground', 'fill-opacity', darkMode ? 0.88 : 0);
+    }
+    if (map.getLayer('um-buildings-outline')) {
+      map.setPaintProperty('um-buildings-outline', 'line-color', darkMode ? '#323a50' : '#d5dae6');
+    }
+    if (map.getLayer('um-faculties-outline-casing')) {
+      map.setPaintProperty('um-faculties-outline-casing', 'line-color', darkMode ? '#141824' : '#ffffff');
+    }
+    if (map.getLayer('um-parks-fill')) {
+      map.setPaintProperty(
+        'um-parks-fill',
+        'fill-color',
+        darkMode
+          ? ['match', ['get', 'kind'], 'pitch', '#162921', 'track', '#2b231d', '#14241d']
+          : ['match', ['get', 'kind'], 'pitch', '#dbeadf', 'track', '#f0e4d6', '#e4efe6'],
+      );
+    }
+    if (map.getLayer('um-water-fill')) {
+      map.setPaintProperty('um-water-fill', 'fill-color', darkMode ? '#132942' : '#d8e7f7');
+      map.setPaintProperty('um-water-fill', 'fill-outline-color', darkMode ? '#1e3e63' : '#b9d1ea');
+    }
+    if (map.getLayer('um-roads-line')) {
+      map.setPaintProperty('um-roads-line', 'line-color', darkMode ? '#282f40' : '#ffffff');
+    }
+    if (map.getLayer('um-roads-casing')) {
+      map.setPaintProperty('um-roads-casing', 'line-color', darkMode ? '#161a24' : '#c7ccd9');
+    }
+    if (map.getLayer('um-faculties-fill')) {
+      map.setPaintProperty('um-faculties-fill', 'fill-opacity', darkMode ? 0.16 : 0.7);
+    }
+    if (map.getLayer('um-faculties-label')) {
+      map.setPaintProperty('um-faculties-label', 'text-color', darkMode ? '#d8e2ff' : '#14224f');
+      map.setPaintProperty(
+        'um-faculties-label',
+        'text-halo-color',
+        darkMode ? 'rgba(15, 18, 26, 0.96)' : 'rgba(250, 251, 255, 0.98)',
+      );
+    }
+    if (map.getLayer('um-buildings-label')) {
+      map.setPaintProperty('um-buildings-label', 'text-color', darkMode ? '#c5c9d6' : '#474b56');
+      map.setPaintProperty(
+        'um-buildings-label',
+        'text-halo-color',
+        darkMode ? 'rgba(15, 18, 26, 0.95)' : 'rgba(250, 251, 255, 0.96)',
+      );
+    }
+
+    if (map.getLayer('um-transit-line') && map.getLayer('um-transit-casing')) {
+      if (highlightedTransitId) {
+        map.setPaintProperty('um-transit-line', 'line-opacity', [
+          'case',
+          ['==', ['get', 'id'], highlightedTransitId],
+          1,
+          0.18,
+        ]);
+        map.setPaintProperty('um-transit-line', 'line-width', [
+          'case',
+          ['==', ['get', 'id'], highlightedTransitId],
+          5.5,
+          2,
+        ]);
+        map.setPaintProperty('um-transit-casing', 'line-opacity', [
+          'case',
+          ['==', ['get', 'id'], highlightedTransitId],
+          0.95,
+          0.15,
+        ]);
+      } else {
+        map.setPaintProperty('um-transit-line', 'line-opacity', 0.72);
+        map.setPaintProperty('um-transit-line', 'line-width', [
+          'interpolate',
+          ['linear'],
+          ['zoom'],
+          14,
+          2,
+          18,
+          3.8,
+        ]);
+        map.setPaintProperty('um-transit-casing', 'line-opacity', 0.72);
+      }
     }
 
     if (map.getLayer('um-building-focus-shell')) {
@@ -1336,7 +1442,7 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
     );
     setVis(['um-pois-circle'], visibility.pois);
     setVis(['um-faculties-label', 'um-buildings-label', 'um-pois-label', 'um-rooms-label'], visibility.labels);
-  }, [activeFaculty, activeBuilding, activeRoom, activeFloor, xrayEnabled, visibility]);
+  }, [activeFaculty, activeBuilding, activeRoom, activeFloor, xrayEnabled, visibility, darkMode, highlightedTransitId]);
 
   // Sync active route line & A/B pins
   useEffect(() => {

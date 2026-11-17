@@ -1,0 +1,7 @@
+{
+  "name": "UM 3D Atlas — Universiti Malaya Campus Map",
+  "description": "Interactive Material 3 3D campus atlas for Universiti Malaya featuring 3D building cutaways, indoor room finder, multi-modal routing, live shuttle transit explorer, and turn-by-turn navigation.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
