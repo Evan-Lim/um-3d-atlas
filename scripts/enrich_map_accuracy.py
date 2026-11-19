@@ -695,7 +695,8 @@ def retrace_zones(facs, blds, ctx, boundary_rings):
         if code not in target_map:
             continue
         ft = target_map[code]
-        zone_blds = [b for b in blds if b["properties"].get("faculty_id") == code]
+        zone_ids = {code, ft["properties"].get("id")}
+        zone_blds = [b for b in blds if b["properties"].get("faculty_id") in zone_ids]
         seed_rings = []
         for b in zone_blds:
             seed_rings.extend(geom_rings(b["geometry"]))
@@ -1018,8 +1019,8 @@ def main():
     canopy_ids = set()
     for b in blds_fc["features"]:
         p = b["properties"]
-        if p.get("faculty_id") == "WISMA_RD":
-            p["faculty_id"] = "R&D"
+        if p.get("faculty_id") == "R&D":
+            p["faculty_id"] = "WISMA_RD"
         bid = p.get("id")
         if bid in BUILDING_ZONE_REASSIGN:
             p["faculty_id"] = BUILDING_ZONE_REASSIGN[bid]

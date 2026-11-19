@@ -1348,7 +1348,7 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
         filter: ['all', ['!=', ['get', 'id'], '__none__'], ['!=', ['get', 'is_canopy'], true]],
         paint: {
           'fill-extrusion-base': 0,
-          'fill-extrusion-height': ['get', 'height'],
+          'fill-extrusion-height': ['coalesce', ['to-number', ['get', 'height'], 8], 8],
           'fill-extrusion-color': [
             'case',
             ['==', ['get', 'has_rooms'], true],
@@ -1393,7 +1393,7 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
         filter: ['==', ['get', 'id'], '__none__'],
         paint: {
           'fill-extrusion-base': 0,
-          'fill-extrusion-height': ['get', 'height'],
+          'fill-extrusion-height': ['coalesce', ['to-number', ['get', 'height'], 8], 8],
           'fill-extrusion-color': '#1a73e8',
           'fill-extrusion-opacity': 1,
           'fill-extrusion-vertical-gradient': true,
@@ -1419,8 +1419,12 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
         source: 'um-rooms',
         filter: ['==', ['get', 'building_id'], '__none__'],
         paint: {
-          'fill-extrusion-base': ['get', 'base_height'],
-          'fill-extrusion-height': ['+', ['get', 'base_height'], ['get', 'height']],
+          'fill-extrusion-base': ['coalesce', ['to-number', ['get', 'base_height'], 0.15], 0.15],
+          'fill-extrusion-height': [
+            '+',
+            ['coalesce', ['to-number', ['get', 'base_height'], 0.15], 0.15],
+            ['coalesce', ['to-number', ['get', 'height'], 3.2], 3.2],
+          ],
           'fill-extrusion-color': [
             'match',
             ['get', 'room_type'],
@@ -1449,8 +1453,12 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
         source: 'um-rooms',
         filter: ['==', ['get', 'id'], '__none__'],
         paint: {
-          'fill-extrusion-base': ['get', 'base_height'],
-          'fill-extrusion-height': ['+', ['get', 'base_height'], ['+', ['get', 'height'], 0.35]],
+          'fill-extrusion-base': ['coalesce', ['to-number', ['get', 'base_height'], 0.15], 0.15],
+          'fill-extrusion-height': [
+            '+',
+            ['coalesce', ['to-number', ['get', 'base_height'], 0.15], 0.15],
+            ['+', ['coalesce', ['to-number', ['get', 'height'], 3.2], 3.2], 0.35],
+          ],
           'fill-extrusion-color': '#d97706',
           'fill-extrusion-opacity': 1,
           'fill-extrusion-vertical-gradient': true,

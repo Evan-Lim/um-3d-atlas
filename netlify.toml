@@ -11,15 +11,26 @@
   to = "/index.html"
   status = 200
 
+# Always fetch fresh HTML shell so new deploys take effect immediately.
+[[headers]]
+  for = "/"
+  [headers.values]
+    Cache-Control = "no-cache, no-store, must-revalidate"
+
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "no-cache, no-store, must-revalidate"
+
 # Fingerprinted bundles can be cached indefinitely.
 [[headers]]
   for = "/assets/*"
   [headers.values]
     Cache-Control = "public, max-age=31536000, immutable"
 
-# Campus datasets are versioned by deployment; cache them for a day.
+# Always revalidate campus GeoJSON/JSON datasets on deploy.
 [[headers]]
   for = "/data/*"
   [headers.values]
-    Cache-Control = "public, max-age=86400"
+    Cache-Control = "public, max-age=0, must-revalidate"
     Access-Control-Allow-Origin = "*"

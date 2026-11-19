@@ -3,6 +3,9 @@ import react from '@vitejs/plugin-react';
 
 export default defineConfig({
   plugins: [react()],
+  define: {
+    __ATLAS_BUILD_ID__: JSON.stringify(Date.now().toString(36)),
+  },
   build: {
     outDir: 'dist',
     sourcemap: false,

@@ -306,6 +306,7 @@ export function App() {
     let cancelled = false;
     async function loadAll() {
       try {
+        const v = encodeURIComponent(typeof __ATLAS_BUILD_ID__ === 'string' ? __ATLAS_BUILD_ID__ : 'dev');
         const [
           boundaryRes,
           facRes,
@@ -317,15 +318,15 @@ export function App() {
           idxRes,
           jogRes,
         ] = await Promise.all([
-          fetch('/data/um_boundary.geojson'),
-          fetch('/data/um_faculties.geojson'),
-          fetch('/data/um_buildings.geojson'),
-          fetch('/data/um_rooms.geojson'),
-          fetch('/data/um_context.geojson'),
-          fetch('/data/um_graph.json'),
-          fetch('/data/um_transit.json'),
-          fetch('/data/um_search_index.json'),
-          fetch('/data/um_jogging.geojson').catch(() => null),
+          fetch(`/data/um_boundary.geojson?v=${v}`),
+          fetch(`/data/um_faculties.geojson?v=${v}`),
+          fetch(`/data/um_buildings.geojson?v=${v}`),
+          fetch(`/data/um_rooms.geojson?v=${v}`),
+          fetch(`/data/um_context.geojson?v=${v}`),
+          fetch(`/data/um_graph.json?v=${v}`),
+          fetch(`/data/um_transit.json?v=${v}`),
+          fetch(`/data/um_search_index.json?v=${v}`),
+          fetch(`/data/um_jogging.geojson?v=${v}`).catch(() => null),
         ]);
 
         if (
