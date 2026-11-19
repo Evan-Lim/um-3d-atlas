@@ -5,7 +5,7 @@
 [build.environment]
   NODE_VERSION = "20"
 
-# Single-page app: let the client router (and map deep links) resolve to the shell.
+# Single-page app: let the client shell resolve deep links cleanly.
 [[redirects]]
   from = "/*"
   to = "/index.html"
@@ -22,11 +22,11 @@
   [headers.values]
     Cache-Control = "no-cache, no-store, must-revalidate"
 
-# Fingerprinted bundles can be cached indefinitely.
+# Revalidate deterministic app bundles on deploy (versioned via ?v= query param).
 [[headers]]
   for = "/assets/*"
   [headers.values]
-    Cache-Control = "public, max-age=31536000, immutable"
+    Cache-Control = "public, max-age=0, must-revalidate"
 
 # Always revalidate campus GeoJSON/JSON datasets on deploy.
 [[headers]]

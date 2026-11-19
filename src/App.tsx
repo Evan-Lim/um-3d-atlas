@@ -318,15 +318,15 @@ export function App() {
           idxRes,
           jogRes,
         ] = await Promise.all([
-          fetch(`/data/um_boundary.geojson?v=${v}`),
-          fetch(`/data/um_faculties.geojson?v=${v}`),
-          fetch(`/data/um_buildings.geojson?v=${v}`),
-          fetch(`/data/um_rooms.geojson?v=${v}`),
-          fetch(`/data/um_context.geojson?v=${v}`),
-          fetch(`/data/um_graph.json?v=${v}`),
-          fetch(`/data/um_transit.json?v=${v}`),
-          fetch(`/data/um_search_index.json?v=${v}`),
-          fetch(`/data/um_jogging.geojson?v=${v}`).catch(() => null),
+          fetch(`./data/um_boundary.geojson?v=${v}`),
+          fetch(`./data/um_faculties.geojson?v=${v}`),
+          fetch(`./data/um_buildings.geojson?v=${v}`),
+          fetch(`./data/um_rooms.geojson?v=${v}`),
+          fetch(`./data/um_context.geojson?v=${v}`),
+          fetch(`./data/um_graph.json?v=${v}`),
+          fetch(`./data/um_transit.json?v=${v}`),
+          fetch(`./data/um_search_index.json?v=${v}`),
+          fetch(`./data/um_jogging.geojson?v=${v}`).catch(() => null),
         ]);
 
         if (
