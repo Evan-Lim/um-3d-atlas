@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Icon, type IconName } from './Icon';
+import { useBottomSheetDrag } from '../hooks/useBottomSheetDrag';
 import type { SearchItem } from '../types/map';
 
 interface SavedPlacesSheetProps {
@@ -36,24 +37,51 @@ export function SavedPlacesSheet({
   onClose,
 }: SavedPlacesSheetProps) {
   const [tab, setTab] = useState<'saved' | 'recent'>('saved');
+  const [collapsed, setCollapsed] = useState(false);
+
+  useEffect(() => {
+    if (open) setCollapsed(false);
+  }, [open]);
+
+  const { isDragging, dragStyle, handleProps } = useBottomSheetDrag(collapsed, setCollapsed);
 
   if (!open) return null;
 
   const activeList = tab === 'saved' ? savedItems : recentItems;
 
   return (
-    <aside className="saved-sheet m3-panel" aria-label="Saved places and recent history">
-      <div className="panel-head">
-        <div>
-          <p className="m3-title">Saved & Recent</p>
-          <p className="m3-caption">Bookmarked faculties, lecture rooms and transit stops</p>
-        </div>
-        <button type="button" className="m3-icon-btn m3-icon-btn--sm" onClick={onClose} aria-label="Close saved places">
-          <Icon name="close" size={16} />
+    <aside
+      className={`saved-sheet m3-panel${collapsed ? ' is-collapsed' : ''}${isDragging ? ' is-dragging' : ''}`}
+      style={dragStyle}
+      aria-label="Saved places and recent history"
+    >
+      <div className="sheet-drag-zone" {...handleProps}>
+        <button
+          type="button"
+          className="sheet-handle"
+          aria-label={collapsed ? 'Expand saved places' : 'Collapse saved places'}
+          aria-expanded={!collapsed}
+        >
+          <span className="sheet-handle__grip" />
         </button>
+        <div className="panel-head">
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <p className="m3-title" style={{ fontSize: 17 }}>
+              Saved &amp; Recent
+            </p>
+            <p className="m3-caption">
+              {collapsed
+                ? `${savedItems.length} saved · ${recentItems.length} recent`
+                : 'Bookmarked faculties, lecture rooms and transit stops'}
+            </p>
+          </div>
+          <button type="button" className="m3-icon-btn m3-icon-btn--sm" onClick={onClose} aria-label="Close saved places">
+            <Icon name="close" size={16} />
+          </button>
+        </div>
       </div>
 
-      <div style={{ padding: '0 18px 12px' }}>
+      <div className="saved-sheet__tabs" style={{ padding: '0 18px 12px' }}>
         <div className="m3-segmented" role="tablist" aria-label="Saved or recent places">
           <button
             type="button"

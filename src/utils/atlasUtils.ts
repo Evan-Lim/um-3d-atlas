@@ -187,3 +187,328 @@ export function buildAtlasShareUrl(
   }
   return url.toString();
 }
+
+export type ActivePanel =
+  | 'none'
+  | 'inspector'
+  | 'saved'
+  | 'directions'
+  | 'layers'
+  | 'explore'
+  | 'transit';
+
+export const THEME_STORAGE_KEY = 'um-atlas-theme-v1';
+
+/**
+ * Pure mutually exclusive tab/panel transition helper.
+ * Opening any tab closes the currently active tab/modal; clicking the active
+ * tab again toggles it closed.
+ */
+export function resolvePanelToggle(
+  current: ActivePanel,
+  target: Exclude<ActivePanel, 'none'>,
+): ActivePanel {
+  return current === target ? 'none' : target;
+}
+
+/**
+ * Reads persisted dark mode preference safely from Storage.
+ */
+export function readPersistedDarkMode(
+  storage?: Pick<Storage, 'getItem'> | null,
+): boolean {
+  try {
+    const store = storage ?? (typeof window !== 'undefined' ? window.localStorage : null);
+    if (!store) return false;
+    return store.getItem(THEME_STORAGE_KEY) === 'dark';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Persists light/dark mode preference safely to Storage.
+ */
+export function persistDarkMode(
+  darkMode: boolean,
+  storage?: Pick<Storage, 'setItem'> | null,
+): void {
+  try {
+    const store = storage ?? (typeof window !== 'undefined' ? window.localStorage : null);
+    store?.setItem(THEME_STORAGE_KEY, darkMode ? 'dark' : 'light');
+  } catch {
+    // Ignore storage write errors in private browsing
+  }
+}
+
+/**
+ * Decides whether a mobile bottom sheet should snap to collapsed (`true`) or
+ * expanded (`false`) after a vertical pointer drag gesture.
+ */
+export function resolveSheetDragOutcome(
+  currentCollapsed: boolean,
+  deltaY: number,
+  velocityY: number,
+  thresholdPx = 44,
+): boolean {
+  if (!currentCollapsed) {
+    if (deltaY >= thresholdPx || (deltaY > 18 && velocityY >= 0.35)) {
+      return true;
+    }
+    return false;
+  }
+  if (deltaY <= -thresholdPx || (deltaY < -18 && velocityY <= -0.35)) {
+    return false;
+  }
+  return true;
+}
+
+export interface RecommendedPlace {
+  id: string;
+  label: string;
+  category: 'jogging' | 'faculty' | 'landmark' | 'transit';
+  distanceM: number | null;
+  distanceLabel: string | null;
+  mode: RouteMode;
+  destination: SearchItem;
+}
+
+export interface RecommendationsResult {
+  isNearby: boolean;
+  items: RecommendedPlace[];
+}
+
+const UM_CAMPUS_CENTER: [number, number] = [101.6538, 3.1209];
+const NEARBY_CAMPUS_RADIUS_M = 3000;
+
+const SHORT_REC_LABELS: Record<string, string> = {
+  LIB: 'Main Library',
+  KPS: 'Perdanasiswa',
+  DTC: 'DTC',
+  EXAM: 'Exam Hall',
+  JPPHB: 'JPPHB',
+  HIR: 'HIR',
+  CORE: 'Chancellery',
+  MASJID: 'Masjid Ar-Rahman',
+  FSKTM: 'FSKTM',
+  FK: 'Engineering (FK)',
+  FS: 'Science (FS)',
+  FOM: 'Medicine (FOM)',
+  FPE: 'Business (FPE)',
+  FASS: 'Arts (FASS)',
+  FLL: 'Languages (FLL)',
+  FOL: 'Law (FOL)',
+  FBE: 'Built Env (FBE)',
+  FED: 'Education',
+  FSES: 'Sports Centre',
+  APM: 'Malay Studies',
+  API: 'Islamic Studies',
+};
+
+export function formatCompactDistance(meters: number): string {
+  if (!Number.isFinite(meters) || meters < 0) return '';
+  if (meters < 1000) return `${Math.max(10, Math.round(meters / 10) * 10)} m`;
+  return `${(Math.round(meters / 100) / 10).toFixed(1)} km`;
+}
+
+function closestCoordOnLine(
+  coords: [number, number][],
+  anchor: [number, number],
+): { coord: [number, number]; distanceM: number } | null {
+  if (coords.length === 0) return null;
+  let best = coords[0];
+  let bestDist = distMeters(anchor, best);
+  for (let i = 1; i < coords.length; i += 1) {
+    const d = distMeters(anchor, coords[i]);
+    if (d < bestDist) {
+      bestDist = d;
+      best = coords[i];
+    }
+  }
+  return { coord: best, distanceM: bestDist };
+}
+
+function conciseZoneLabel(item: SearchItem): string {
+  if (SHORT_REC_LABELS[item.id]) return SHORT_REC_LABELS[item.id];
+  const cleaned = item.title
+    .replace(/^Faculty of\s+/i, '')
+    .replace(/\s*\([^)]*\)$/, '')
+    .trim();
+  return cleaned.length > 20 ? item.id : cleaned;
+}
+
+/**
+ * Ranks contextual recommended destinations below the search bar based on the
+ * visitor's live location (nearest UM jogging loop trailhead, nearby faculties
+ * and landmarks) with a curated UM campus fallback when GPS is off or far away.
+ */
+export function buildRecommendedPlaces(
+  userCoord: [number, number] | null,
+  searchItems: SearchItem[],
+  joggingRoutes: GeoJSON.FeatureCollection,
+  campusCenter: [number, number] = UM_CAMPUS_CENTER,
+  limit = 6,
+): RecommendationsResult {
+  const isNearby = Boolean(userCoord && distMeters(userCoord, campusCenter) <= NEARBY_CAMPUS_RADIUS_M);
+  const anchor: [number, number] = isNearby && userCoord ? userCoord : campusCenter;
+
+  // Extract jogging loop trailhead candidates
+  const jogCandidates: { rec: RecommendedPlace; dist: number }[] = [];
+  for (const ft of joggingRoutes.features) {
+    if (ft.geometry?.type !== 'LineString') continue;
+    const coords = ft.geometry.coordinates as [number, number][];
+    const hit = closestCoordOnLine(coords, anchor);
+    if (!hit) continue;
+    const props = (ft.properties ?? {}) as Record<string, unknown>;
+    const id = String(props.id ?? 'jog-loop');
+    const fullName = String(props.name ?? 'UM Jogging Loop');
+    const shortName = String(props.short_name ?? fullName).replace(/\s*Loop$/i, ' Jog');
+    const km = Number(props.distance_km ?? 0);
+    const destItem: SearchItem = {
+      id: `jog-trailhead-${id}`,
+      kind: 'point',
+      title: `${fullName} Trailhead`,
+      subtitle: km > 0 ? `Jogging loop · ${km.toFixed(1)} km` : 'Popular UM jogging route',
+      keywords: `${fullName.toLowerCase()} jog running loop trailhead`,
+      center: hit.coord,
+      entrance_node: -1,
+    };
+    jogCandidates.push({
+      dist: hit.distanceM,
+      rec: {
+        id: `rec-${id}`,
+        label: shortName,
+        category: 'jogging',
+        distanceM: isNearby ? Math.round(hit.distanceM) : null,
+        distanceLabel: isNearby ? formatCompactDistance(hit.distanceM) : null,
+        mode: 'walk',
+        destination: destItem,
+      },
+    });
+  }
+  jogCandidates.sort((a, b) => a.dist - b.dist);
+
+  const byZoneId = new Map<string, SearchItem>();
+  for (const item of searchItems) {
+    if (item.kind === 'faculty') byZoneId.set(item.id, item);
+  }
+
+  if (isNearby && userCoord) {
+    const picked: RecommendedPlace[] = [];
+    const usedIds = new Set<string>();
+
+    // 1. Closest jogging loop trailhead
+    if (jogCandidates.length > 0) {
+      picked.push(jogCandidates[0].rec);
+      usedIds.add(jogCandidates[0].rec.id);
+    }
+
+    // 2. Closest faculties/institutes (> 35m away so we don't suggest where user already stands)
+    const nearbyFacs = searchItems
+      .filter(
+        (it) =>
+          it.kind === 'faculty' &&
+          (it.zone_kind === 'faculty' || !it.zone_kind || it.zone_kind === 'institute'),
+      )
+      .map((it) => ({ item: it, dist: distMeters(userCoord, it.center) }))
+      .filter((x) => x.dist >= 35)
+      .sort((a, b) => a.dist - b.dist);
+
+    for (const entry of nearbyFacs.slice(0, 2)) {
+      const recId = `rec-fac-${entry.item.id}`;
+      if (usedIds.has(recId)) continue;
+      usedIds.add(recId);
+      picked.push({
+        id: recId,
+        label: conciseZoneLabel(entry.item),
+        category: 'faculty',
+        distanceM: Math.round(entry.dist),
+        distanceLabel: formatCompactDistance(entry.dist),
+        mode: 'walk',
+        destination: entry.item,
+      });
+    }
+
+    // 3. Closest iconic landmarks (Library, KPS, DTC, Exam Hall, Masjid, Chancellery)
+    const landmarkIds = ['LIB', 'KPS', 'DTC', 'EXAM', 'MASJID', 'CORE'];
+    const nearbyLandmarks = landmarkIds
+      .map((id) => byZoneId.get(id))
+      .filter((it): it is SearchItem => Boolean(it))
+      .map((it) => ({ item: it, dist: distMeters(userCoord, it.center) }))
+      .filter((x) => x.dist >= 35)
+      .sort((a, b) => a.dist - b.dist);
+
+    for (const entry of nearbyLandmarks.slice(0, 2)) {
+      const recId = `rec-lm-${entry.item.id}`;
+      if (usedIds.has(recId)) continue;
+      usedIds.add(recId);
+      picked.push({
+        id: recId,
+        label: conciseZoneLabel(entry.item),
+        category: 'landmark',
+        distanceM: Math.round(entry.dist),
+        distanceLabel: formatCompactDistance(entry.dist),
+        mode: 'walk',
+        destination: entry.item,
+      });
+    }
+
+    // 4. Fill remaining slot with nearest rail station or next closest faculty
+    if (picked.length < limit) {
+      const railStations = searchItems
+        .filter((it) => it.kind === 'rail_station')
+        .map((it) => ({ item: it, dist: distMeters(userCoord, it.center) }))
+        .sort((a, b) => a.dist - b.dist);
+      if (railStations.length > 0 && railStations[0].dist <= 2600) {
+        const st = railStations[0];
+        picked.push({
+          id: `rec-tr-${st.item.id}`,
+          label: st.item.title.replace(/\s*\([^)]*\)$/, ''),
+          category: 'transit',
+          distanceM: Math.round(st.dist),
+          distanceLabel: formatCompactDistance(st.dist),
+          mode: st.dist > 1100 ? 'bus' : 'walk',
+          destination: st.item,
+        });
+      }
+    }
+
+    return { isNearby: true, items: picked.slice(0, limit) };
+  }
+
+  // Fallback curated campus highlights when GPS is unavailable or off-campus
+  const fallback: RecommendedPlace[] = [];
+  const tasikLoop =
+    jogCandidates.find((j) => j.rec.id.includes('tasik')) ?? jogCandidates[0];
+  if (tasikLoop) {
+    fallback.push(tasikLoop.rec);
+  }
+
+  const curatedZones: { id: string; category: 'landmark' | 'faculty' }[] = [
+    { id: 'LIB', category: 'landmark' },
+    { id: 'KPS', category: 'landmark' },
+    { id: 'EXAM', category: 'landmark' },
+    { id: 'DTC', category: 'landmark' },
+    { id: 'FSKTM', category: 'faculty' },
+    { id: 'JPPHB', category: 'faculty' },
+  ];
+
+  for (const spec of curatedZones) {
+    if (fallback.length >= limit) break;
+    const found = byZoneId.get(spec.id);
+    if (!found) continue;
+    fallback.push({
+      id: `rec-curated-${found.id}`,
+      label: conciseZoneLabel(found),
+      category: spec.category,
+      distanceM: null,
+      distanceLabel: null,
+      mode: 'walk',
+      destination: found,
+    });
+  }
+
+  return { isNearby: false, items: fallback.slice(0, limit) };
+}
+
+

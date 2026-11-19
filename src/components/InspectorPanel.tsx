@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Icon } from './Icon';
+import { useBottomSheetDrag } from '../hooks/useBottomSheetDrag';
 import { zoneAccent, zoneKindLabel } from '../theme';
 import { findNearbyStops } from '../utils/atlasUtils';
 import type { BuildingProps, FacultyProps, RoomProps, SearchItem, TransitRoute } from '../types/map';
@@ -73,6 +74,8 @@ export function InspectorPanel({
     setRoomFilter('');
   }, [selectionKey]);
 
+  const { isDragging, dragStyle, handleProps } = useBottomSheetDrag(collapsed, setCollapsed);
+
   const targetCoord = room?.center ?? building?.center ?? poi?.center ?? faculty?.center ?? null;
 
   const nearbyStops = useMemo(() => {
@@ -122,92 +125,126 @@ export function InspectorPanel({
   const alt = faculty && building ? faculty.name : faculty?.name_ms;
   const code = faculty?.code ?? '';
 
-  return (
-    <aside className={`inspector m3-panel${collapsed ? ' is-collapsed' : ''}`} aria-label="Place details">
-      <button
-        type="button"
-        className="sheet-handle"
-        onClick={() => setCollapsed((value) => !value)}
-        aria-label={collapsed ? 'Expand details' : 'Collapse details'}
-        aria-expanded={!collapsed}
-      >
-        <span className="sheet-handle__grip" />
-      </button>
-      <div className="crumbs">
-        <button type="button" className="crumbs__btn" onClick={onResetCampus}>
-          UM
-        </button>
-        {faculty && (
-          <>
-            <span className="crumbs__sep">/</span>
-            <button type="button" className="crumbs__btn" onClick={onClose}>
-              {faculty.code}
-            </button>
-          </>
-        )}
-        {building && (
-          <>
-            <span className="crumbs__sep">/</span>
-            <button type="button" className="crumbs__btn" onClick={onClearBuilding}>
-              {building.name}
-            </button>
-          </>
-        )}
-        {room && (
-          <>
-            <span className="crumbs__sep">/</span>
-            <button type="button" className="crumbs__btn" onClick={onClearRoom}>
-              {room.code}
-            </button>
-          </>
-        )}
-        {poi && (
-          <>
-            <span className="crumbs__sep">/</span>
-            <span>{POI_KIND_LABEL[poi.kind] ?? 'Place'}</span>
-          </>
-        )}
-      </div>
+  const compactSummary = room
+    ? `${room.floor_label} · ${room.building_name}`
+    : building
+      ? `${building.levels} ${building.levels === 1 ? 'level' : 'levels'}${
+          building.has_rooms ? ` · ${buildingRooms.length} rooms` : ''
+        }${faculty ? ` · ${faculty.code}` : ''}`
+      : poi
+        ? servingRoutes.length > 0
+          ? `${POI_KIND_LABEL[poi.kind] ?? 'Stop'} · ${servingRoutes.map((r) => r.code).join(', ')}`
+          : poi.subtitle || POI_KIND_LABEL[poi.kind] || 'Place'
+        : `${zoneKindLabel(faculty?.zone_kind)} · ${facultyBuildings.length} ${
+            facultyBuildings.length === 1 ? 'building' : 'buildings'
+          }`;
 
-      <div className="inspector__head">
-        <span
-          className="zone-banner__code"
-          style={{ background: accent, width: 'auto', minWidth: 42, height: 42, fontSize: 11.5 }}
+  return (
+    <aside
+      className={`inspector m3-panel${collapsed ? ' is-collapsed' : ''}${isDragging ? ' is-dragging' : ''}`}
+      style={dragStyle}
+      aria-label="Place details"
+    >
+      <div className="sheet-drag-zone" {...handleProps}>
+        <button
+          type="button"
+          className="sheet-handle"
+          aria-label={collapsed ? 'Expand details' : 'Collapse details'}
+          aria-expanded={!collapsed}
         >
-          {room ? room.code : building ? building.code || 'B' : poi ? <Icon name="pin" size={18} /> : code}
-        </span>
-        <div className="inspector__head-body">
-          <div className="inspector__kind">
-            <span className="m3-meta-line">
-              <span>
-                {room
-                  ? room.floor_label
-                  : building
-                    ? 'Building'
-                    : poi
-                      ? POI_KIND_LABEL[poi.kind] ?? 'Place'
-                      : zoneKindLabel(faculty?.zone_kind)}
-              </span>
-              {building?.has_rooms && (
-                <>
-                  <span aria-hidden="true">·</span>
-                  <span>Indoor 3D rooms</span>
-                </>
-              )}
-              {faculty?.established && !building && !room && (
-                <>
-                  <span aria-hidden="true">·</span>
-                  <span>Est. {faculty.established}</span>
-                </>
-              )}
-            </span>
-          </div>
-          <h2 className="inspector__name">{title}</h2>
-          {alt && alt !== title && <p className="inspector__name-alt">{alt}</p>}
-        </div>
-        <button type="button" className="m3-icon-btn m3-icon-btn--sm" onClick={onClose} aria-label="Close details">
-          <Icon name="close" size={16} />
+          <span className="sheet-handle__grip" />
         </button>
+
+        <div className="crumbs">
+          <button type="button" className="crumbs__btn" onClick={onResetCampus}>
+            UM
+          </button>
+          {faculty && (
+            <>
+              <span className="crumbs__sep">/</span>
+              <button type="button" className="crumbs__btn" onClick={onClose}>
+                {faculty.code}
+              </button>
+            </>
+          )}
+          {building && (
+            <>
+              <span className="crumbs__sep">/</span>
+              <button type="button" className="crumbs__btn" onClick={onClearBuilding}>
+                {building.name}
+              </button>
+            </>
+          )}
+          {room && (
+            <>
+              <span className="crumbs__sep">/</span>
+              <button type="button" className="crumbs__btn" onClick={onClearRoom}>
+                {room.code}
+              </button>
+            </>
+          )}
+          {poi && (
+            <>
+              <span className="crumbs__sep">/</span>
+              <span>{POI_KIND_LABEL[poi.kind] ?? 'Place'}</span>
+            </>
+          )}
+        </div>
+
+        <div className="inspector__head">
+          <span
+            className="zone-banner__code"
+            style={{ background: accent, width: 'auto', minWidth: 40, height: 40, fontSize: 11.5 }}
+          >
+            {room ? room.code : building ? building.code || 'B' : poi ? <Icon name={poi.kind === 'bus_stop' ? 'bus' : poi.kind === 'rail_station' ? 'train' : 'pin'} size={17} /> : code}
+          </span>
+          <div className="inspector__head-body">
+            <div className="inspector__kind">
+              <span className="m3-meta-line">
+                <span>
+                  {room
+                    ? room.floor_label
+                    : building
+                      ? 'Building'
+                      : poi
+                        ? POI_KIND_LABEL[poi.kind] ?? 'Place'
+                        : zoneKindLabel(faculty?.zone_kind)}
+                </span>
+                {building?.has_rooms && (
+                  <>
+                    <span aria-hidden="true">·</span>
+                    <span>Indoor 3D rooms</span>
+                  </>
+                )}
+                {faculty?.established && !building && !room && (
+                  <>
+                    <span aria-hidden="true">·</span>
+                    <span>Est. {faculty.established}</span>
+                  </>
+                )}
+              </span>
+            </div>
+            <h2 className="inspector__name">{title}</h2>
+            {alt && alt !== title && <p className="inspector__name-alt">{alt}</p>}
+            {collapsed && <p className="sheet-peek-sub">{compactSummary}</p>}
+          </div>
+          <div className="sheet-head-actions">
+            {collapsed && (
+              <button
+                type="button"
+                className="m3-icon-btn m3-icon-btn--sm m3-icon-btn--filled"
+                onClick={() => onNavigateTo(actionTarget)}
+                aria-label="Directions"
+                title="Directions"
+              >
+                <Icon name="directions" size={15} />
+              </button>
+            )}
+            <button type="button" className="m3-icon-btn m3-icon-btn--sm" onClick={onClose} aria-label="Close details">
+              <Icon name="close" size={16} />
+            </button>
+          </div>
+        </div>
       </div>
 
       <div className="inspector__actions">

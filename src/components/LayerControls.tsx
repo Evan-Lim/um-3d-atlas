@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Icon } from './Icon';
+import { useBottomSheetDrag } from '../hooks/useBottomSheetDrag';
 import type { MapLayerVisibility } from '../types/map';
 
 interface LayerControlsProps {
@@ -13,24 +14,25 @@ interface LayerControlsProps {
   onResetCampus: () => void;
   onClose: () => void;
   stats: {
+    faculties: number;
     buildings: number;
     rooms: number;
-    faculties: number;
     nodes: number;
     edges: number;
     busRoutes: number;
   };
 }
 
-const LAYERS: { key: keyof MapLayerVisibility; label: string; color: string }[] = [
-  { key: 'boundary', label: 'Campus boundary', color: '#24439c' },
-  { key: 'faculties', label: 'Faculty zones', color: '#2f5bb7' },
-  { key: 'buildings3d', label: '3D Buildings & rooms', color: '#9aa3b8' },
-  { key: 'roads', label: 'Roads', color: '#7d8597' },
-  { key: 'pathways', label: 'Footpaths & shortcuts', color: '#4f8fa8' },
-  { key: 'busRoutes', label: 'Transit & shuttle lines', color: '#0c6a5e' },
-  { key: 'pois', label: 'Transit stops & gates', color: '#5c6fa8' },
-  { key: 'labels', label: 'Map labels', color: '#171a21' },
+const LAYER_ROWS: { key: keyof MapLayerVisibility; label: string; color: string }[] = [
+  { key: 'boundary', label: 'Campus boundary', color: '#1a73e8' },
+  { key: 'faculties', label: 'Faculty & college overlays', color: '#5f84b8' },
+  { key: 'buildings3d', label: '3D buildings & rooms', color: '#70757a' },
+  { key: 'busRoutes', label: 'Shuttle & RapidKL lines', color: '#d9532f' },
+  { key: 'pois', label: 'Bus stops, rail & gates', color: '#137333' },
+  { key: 'joggingRoutes', label: 'Jogging routes & loops', color: '#2e7d5b' },
+  { key: 'pathways', label: 'Footpaths & shortcuts', color: '#607d8b' },
+  { key: 'roads', label: 'Campus roads', color: '#9aa0a6' },
+  { key: 'labels', label: 'Zone & building labels', color: '#3c4043' },
 ];
 
 export function LayerControls({
@@ -45,134 +47,164 @@ export function LayerControls({
   onClose,
   stats,
 }: LayerControlsProps) {
-  const [sourcesOpen, setSourcesOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
+
+  useEffect(() => {
+    if (open) setCollapsed(false);
+  }, [open]);
+
+  const { isDragging, dragStyle, handleProps } = useBottomSheetDrag(collapsed, setCollapsed);
 
   if (!open) return null;
 
+  const activeCount = LAYER_ROWS.filter((r) => visibility[r.key]).length;
+
   return (
-    <aside className="layers-panel" aria-label="Map layers">
-      <div className="layers-panel__head">
-        <div>
-          <p className="m3-subtitle" style={{ fontWeight: 600 }}>
-            Map layers & appearance
-          </p>
-          <p className="m3-caption">
-            {is3D ? '3D perspective' : 'Flat 2D'} · {darkMode ? 'M3 Dark' : 'M3 Light'}
-          </p>
-        </div>
-        <button type="button" className="m3-icon-btn m3-icon-btn--sm" onClick={onClose} aria-label="Close layers">
-          <Icon name="close" size={16} />
+    <aside
+      className={`layers-panel m3-panel${collapsed ? ' is-collapsed' : ''}${isDragging ? ' is-dragging' : ''}`}
+      style={dragStyle}
+      aria-label="Map layers and appearance"
+    >
+      <div className="sheet-drag-zone" {...handleProps}>
+        <button
+          type="button"
+          className="sheet-handle"
+          aria-label={collapsed ? 'Expand map layers' : 'Collapse map layers'}
+          aria-expanded={!collapsed}
+        >
+          <span className="sheet-handle__grip" />
         </button>
+
+        <div className="layers-panel__head">
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <p className="m3-title" style={{ fontSize: 17 }}>
+              Map layers
+            </p>
+            <p className="m3-caption">
+              {is3D ? '3D view' : '2D flat'} · {darkMode ? 'Dark' : 'Light'} · {activeCount}/{LAYER_ROWS.length} active
+            </p>
+          </div>
+          <div className="sheet-head-actions">
+            {collapsed && (
+              <button
+                type="button"
+                className="m3-icon-btn m3-icon-btn--sm m3-icon-btn--tonal"
+                onClick={onToggleDarkMode}
+                aria-label={darkMode ? 'Switch to light theme' : 'Switch to dark theme'}
+                title={darkMode ? 'Light theme' : 'Dark theme'}
+              >
+                <Icon name={darkMode ? 'sun' : 'moon'} size={15} />
+              </button>
+            )}
+            <button type="button" className="m3-icon-btn m3-icon-btn--sm" onClick={onClose} aria-label="Close layers">
+              <Icon name="close" size={16} />
+            </button>
+          </div>
+        </div>
       </div>
 
       <div className="layers-panel__body m3-scroll">
-        {LAYERS.map((layer) => (
-          <label className="layer-row" key={layer.key}>
-            <span className="layer-row__label">
-              <span className="layer-row__dot" style={{ background: layer.color }} />
-              {layer.label}
-            </span>
-            <span className="m3-switch">
-              <input
-                type="checkbox"
-                checked={visibility[layer.key]}
-                onChange={() => onToggleLayer(layer.key)}
-                aria-label={`Toggle ${layer.label}`}
-              />
-              <span className="m3-switch__track" />
-            </span>
-          </label>
-        ))}
+        <div className="layers-quick-toggles">
+          <div className="m3-segmented" role="group" aria-label="Map projection">
+            <button
+              type="button"
+              className={`m3-segmented__item${is3D ? ' is-active' : ''}`}
+              onClick={() => {
+                if (!is3D) onToggle3D();
+              }}
+            >
+              <Icon name="box" size={14} />
+              3D Extrusion
+            </button>
+            <button
+              type="button"
+              className={`m3-segmented__item${!is3D ? ' is-active' : ''}`}
+              onClick={() => {
+                if (is3D) onToggle3D();
+              }}
+            >
+              2D Flat
+            </button>
+          </div>
 
-        <div className="layers-panel__section">
-          <label className="layer-row">
-            <span className="layer-row__label">
-              <Icon name="box" size={15} />
-              3D buildings & pitch
-            </span>
-            <span className="m3-switch">
-              <input type="checkbox" checked={is3D} onChange={onToggle3D} aria-label="Toggle 3D view" />
-              <span className="m3-switch__track" />
-            </span>
-          </label>
-          <label className="layer-row">
-            <span className="layer-row__label">
-              <Icon name={darkMode ? 'moon' : 'sun'} size={15} />
-              Dark theme (Material 3)
-            </span>
-            <span className="m3-switch">
-              <input type="checkbox" checked={darkMode} onChange={onToggleDarkMode} aria-label="Toggle dark mode" />
-              <span className="m3-switch__track" />
-            </span>
-          </label>
-          <button
-            type="button"
-            className="m3-btn m3-btn--text m3-btn--sm"
-            onClick={onResetCampus}
-            style={{ marginTop: 4 }}
-          >
-            <Icon name="reset" size={15} />
-            Reset camera view
-          </button>
+          <div className="m3-segmented" role="group" aria-label="Color appearance">
+            <button
+              type="button"
+              className={`m3-segmented__item${!darkMode ? ' is-active' : ''}`}
+              onClick={() => {
+                if (darkMode) onToggleDarkMode();
+              }}
+            >
+              <Icon name="sun" size={14} />
+              Light
+            </button>
+            <button
+              type="button"
+              className={`m3-segmented__item${darkMode ? ' is-active' : ''}`}
+              onClick={() => {
+                if (!darkMode) onToggleDarkMode();
+              }}
+            >
+              <Icon name="moon" size={14} />
+              Dark
+            </button>
+          </div>
+        </div>
+
+        <div className="layers-panel__section" style={{ borderTop: 'none', marginTop: 2, paddingTop: 4 }}>
+          {LAYER_ROWS.map(({ key, label, color }) => {
+            const on = visibility[key];
+            return (
+              <label key={key} className="layer-row">
+                <span className="layer-row__label">
+                  <span className="layer-row__dot" style={{ background: color }} />
+                  {label}
+                </span>
+                <span className="m3-switch">
+                  <input type="checkbox" checked={on} onChange={() => onToggleLayer(key)} />
+                  <span className="m3-switch__track" />
+                </span>
+              </label>
+            );
+          })}
         </div>
 
         <div className="layers-panel__section">
-          <button
-            type="button"
-            className="m3-btn m3-btn--text m3-btn--sm"
-            onClick={() => setSourcesOpen((v) => !v)}
-            aria-expanded={sourcesOpen}
-            style={{ justifyContent: 'space-between', width: '100%', padding: '0 6px' }}
-          >
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
-              <Icon name="database" size={15} />
-              Campus dataset
-            </span>
-            <Icon name={sourcesOpen ? 'chevronDown' : 'chevronRight'} size={14} />
-          </button>
+          <p className="m3-eyebrow" style={{ marginBottom: 6 }}>
+            Campus Dataset
+          </p>
+          <div className="layers-panel__stats">
+            <div className="stat">
+              <div className="stat__value m3-mono">{stats.faculties}</div>
+              <div className="stat__label">Zones</div>
+            </div>
+            <div className="stat">
+              <div className="stat__value m3-mono">{stats.buildings}</div>
+              <div className="stat__label">Buildings</div>
+            </div>
+            <div className="stat">
+              <div className="stat__value m3-mono">{stats.rooms}</div>
+              <div className="stat__label">Rooms</div>
+            </div>
+          </div>
+        </div>
 
-          {sourcesOpen && (
-            <>
-              <div className="layers-panel__stats">
-                <div className="stat">
-                  <div className="stat__value m3-mono">{stats.faculties}</div>
-                  <div className="stat__label">Zones</div>
-                </div>
-                <div className="stat">
-                  <div className="stat__value m3-mono">{stats.buildings}</div>
-                  <div className="stat__label">Buildings</div>
-                </div>
-                <div className="stat">
-                  <div className="stat__value m3-mono">{stats.rooms}</div>
-                  <div className="stat__label">Rooms</div>
-                </div>
-                <div className="stat">
-                  <div className="stat__value m3-mono">{stats.busRoutes}</div>
-                  <div className="stat__label">Transit lines</div>
-                </div>
-                <div className="stat" style={{ gridColumn: 'span 2' }}>
-                  <div className="stat__value m3-mono">
-                    {stats.nodes.toLocaleString()} / {stats.edges.toLocaleString()}
-                  </div>
-                  <div className="stat__label">Routing nodes / edges</div>
-                </div>
-              </div>
-              <div style={{ marginTop: 8 }}>
-                <div className="layers-panel__source">
-                  <Icon name="globe" size={13} />
-                  <span>OpenStreetMap campus geometry · OpenFreeMap basemap</span>
-                </div>
-                <div className="layers-panel__source">
-                  <Icon name="building" size={13} />
-                  <span>UM directory: faculties, KK1–KK13, KPPI, IAS and PPUM</span>
-                </div>
-                <div className="layers-panel__source">
-                  <Icon name="bus" size={13} />
-                  <span>RapidKL T789 / T815 · UM shuttle · MRT & LRT feeder stops</span>
-                </div>
-              </div>
-            </>
-          )}
+        <div className="layers-panel__section">
+          <p className="m3-eyebrow" style={{ marginBottom: 4 }}>
+            Data Sources
+          </p>
+          <div className="layers-panel__source">
+            <Icon name="database" size={14} />
+            <span>
+              OpenStreetMap &amp; verified UM campus records (UM, PPUM, UMSC, Wisma R&amp;D) · {stats.nodes.toLocaleString()} routing nodes ·{' '}
+              {stats.busRoutes} RapidKL &amp; UM shuttle lines · 3 campus jogging loops.
+            </span>
+          </div>
+          <div style={{ marginTop: 10 }}>
+            <button type="button" className="m3-btn m3-btn--tonal m3-btn--sm" style={{ width: '100%' }} onClick={onResetCampus}>
+              Reset camera to campus overview
+            </button>
+          </div>
         </div>
       </div>
     </aside>

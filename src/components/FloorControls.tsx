@@ -60,17 +60,22 @@ export function FloorControls({
         <Icon name="layers" size={16} />
       </button>
 
-      {floors.map(([floorNum, label]) => (
-        <button
-          key={floorNum}
-          type="button"
-          className={`floor-ctl__btn${activeFloor === floorNum ? ' is-selected' : ''}`}
-          onClick={() => onSelectFloor(floorNum)}
-          aria-pressed={activeFloor === floorNum}
-        >
-          {label}
-        </button>
-      ))}
+      {floors.map(([floorNum, label]) => {
+        const shortLabel = floorNum === 0 ? 'G' : floorNum < 0 ? `B${Math.abs(floorNum)}` : `L${floorNum}`;
+        return (
+          <button
+            key={floorNum}
+            type="button"
+            className={`floor-ctl__btn${activeFloor === floorNum ? ' is-selected' : ''}`}
+            onClick={() => onSelectFloor(floorNum)}
+            title={label}
+            aria-label={label}
+            aria-pressed={activeFloor === floorNum}
+          >
+            {shortLabel}
+          </button>
+        );
+      })}
     </div>
   );
 }

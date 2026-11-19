@@ -14,10 +14,16 @@ import { type CameraCommand, UmMapCanvas, type UmContextBundle } from './compone
 import { CampusRouter, distMeters } from './routing/pathfinder';
 import { applyZonePalette, zoneKindLabel } from './theme';
 import {
+  type ActivePanel,
+  type RecommendedPlace,
   buildAtlasShareUrl,
+  buildRecommendedPlaces,
   compareAllModes,
   parseAtlasUrlParams,
+  persistDarkMode,
   pushRecentPlace,
+  readPersistedDarkMode,
+  resolvePanelToggle,
   toggleSavedPlace,
 } from './utils/atlasUtils';
 import type {
@@ -46,7 +52,6 @@ const UM_CENTER: [number, number] = [101.6538, 3.1209];
 
 const SAVED_STORAGE_KEY = 'um-atlas-saved-v1';
 const RECENT_STORAGE_KEY = 'um-atlas-recent-v1';
-const THEME_STORAGE_KEY = 'um-atlas-theme-v1';
 
 const DEFAULT_SAVED_KEYS = [
   'faculty:FSKTM',
@@ -117,29 +122,36 @@ export function App() {
   const [buildingsGeo, setBuildingsGeo] = useState<GeoJSON.FeatureCollection>(EMPTY_FC);
   const [roomsGeo, setRoomsGeo] = useState<GeoJSON.FeatureCollection>(EMPTY_FC);
   const [context, setContext] = useState<UmContextBundle>(EMPTY_CONTEXT);
+  const [joggingGeo, setJoggingGeo] = useState<GeoJSON.FeatureCollection>(EMPTY_FC);
   const [transitData, setTransitData] = useState<TransitData>(EMPTY_TRANSIT);
   const [searchItems, setSearchItems] = useState<SearchItem[]>([]);
   const [graphStats, setGraphStats] = useState({ nodes: 0, edges: 0 });
   const routerRef = useRef<CampusRouter | null>(null);
   const appliedUrlRef = useRef(false);
 
-  // Material 3 Theme (Light / Dark)
-  const [darkMode, setDarkMode] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem(THEME_STORAGE_KEY) === 'dark';
-    } catch {
-      return false;
-    }
-  });
+  // Theme (Light / Dark) — persisted reliably across reloads
+  const [darkMode, setDarkMode] = useState<boolean>(() => readPersistedDarkMode());
 
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', darkMode ? 'dark' : 'light');
-    try {
-      localStorage.setItem(THEME_STORAGE_KEY, darkMode ? 'dark' : 'light');
-    } catch {
-      // Ignore storage write errors
-    }
+    const theme = darkMode ? 'dark' : 'light';
+    document.documentElement.setAttribute('data-theme', theme);
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', darkMode ? '#202124' : '#1a73e8');
+    persistDarkMode(darkMode);
   }, [darkMode]);
+
+  // Single mutually exclusive panel/drawer state (prevents overlapping tabs/panels)
+  const [activePanel, setActivePanel] = useState<ActivePanel>('none');
+
+  const togglePanel = useCallback((target: Exclude<ActivePanel, 'none'>) => {
+    setPickTarget(null);
+    setActivePanel((prev) => resolvePanelToggle(prev, target));
+  }, []);
+
+  const closeActivePanel = useCallback(() => {
+    setPickTarget(null);
+    setActivePanel('none');
+  }, []);
 
   // Saved & Recent Places state
   const [savedKeys, setSavedKeys] = useState<string[]>(() =>
@@ -148,7 +160,6 @@ export function App() {
   const [recentKeys, setRecentKeys] = useState<string[]>(() =>
     loadStoredArray(RECENT_STORAGE_KEY, []),
   );
-  const [savedSheetOpen, setSavedSheetOpen] = useState(false);
 
   useEffect(() => {
     try {
@@ -170,8 +181,7 @@ export function App() {
     setRecentKeys((prev) => pushRecentPlace(prev, key));
   }, []);
 
-  // Transit Hub & Highlighted Bus Route state
-  const [transitHubOpen, setTransitHubOpen] = useState(false);
+  // Highlighted Bus Route state
   const [highlightedTransitId, setHighlightedTransitId] = useState<string | null>(null);
 
   // Selection / Inspector state
@@ -187,6 +197,7 @@ export function App() {
     faculties: true,
     roads: true,
     pathways: true,
+    joggingRoutes: true,
     busRoutes: true,
     buildings3d: true,
     pois: true,
@@ -195,20 +206,24 @@ export function App() {
 
   // Google-Maps-style top filter chip (synced with quick-jump rail)
   const [activeChip, setActiveChip] = useState<SearchFilterChip>('all');
-  const [zoneDirectoryOpen, setZoneDirectoryOpen] = useState(false);
   const [searchFocusSignal, setSearchFocusSignal] = useState(0);
-  const [layersOpen, setLayersOpen] = useState(false);
   const [userLocation, setUserLocation] = useState<UserLocation | null>(null);
   const [locating, setLocating] = useState(false);
   const [locationNotice, setLocationNotice] = useState<string | null>(null);
 
   // Directions state: Walk is default (with stepFree disabled by default), Bus 2nd, Drive 3rd
-  const [directionsOpen, setDirectionsOpen] = useState(false);
   const [routeMode, setRouteMode] = useState<RouteMode>('walk');
   const [stepFree, setStepFree] = useState(false);
   const [originItem, setOriginItem] = useState<SearchItem | null>(null);
   const [destItem, setDestItem] = useState<SearchItem | null>(null);
   const [pickTarget, setPickTarget] = useState<'origin' | 'destination' | null>(null);
+
+  // Derived mutually exclusive open flags
+  const zoneDirectoryOpen = activePanel === 'explore';
+  const transitHubOpen = activePanel === 'transit';
+  const savedSheetOpen = activePanel === 'saved';
+  const directionsOpen = activePanel === 'directions';
+  const layersOpen = activePanel === 'layers';
 
   // Camera command
   const [cameraCmd, setCameraCmd] = useState<CameraCommand | null>(null);
@@ -300,6 +315,7 @@ export function App() {
           graphRes,
           transitRes,
           idxRes,
+          jogRes,
         ] = await Promise.all([
           fetch('/data/um_boundary.geojson'),
           fetch('/data/um_faculties.geojson'),
@@ -309,6 +325,7 @@ export function App() {
           fetch('/data/um_graph.json'),
           fetch('/data/um_transit.json'),
           fetch('/data/um_search_index.json'),
+          fetch('/data/um_jogging.geojson').catch(() => null),
         ]);
 
         if (
@@ -324,7 +341,7 @@ export function App() {
           throw new Error('Failed to load UM campus dataset files');
         }
 
-        const [bJson, fJson, buJson, rJson, cJson, gJson, tJson, sJson] = (await Promise.all([
+        const [bJson, fJson, buJson, rJson, cJson, gJson, tJson, sJson, jJson] = (await Promise.all([
           boundaryRes.json(),
           facRes.json(),
           bldRes.json(),
@@ -333,6 +350,7 @@ export function App() {
           graphRes.json(),
           transitRes.json(),
           idxRes.json(),
+          jogRes && jogRes.ok ? jogRes.json() : Promise.resolve(EMPTY_FC),
         ])) as [
           GeoJSON.FeatureCollection,
           GeoJSON.FeatureCollection,
@@ -342,6 +360,7 @@ export function App() {
           GraphData,
           TransitData,
           SearchItem[],
+          GeoJSON.FeatureCollection,
         ];
 
         if (cancelled) return;
@@ -387,6 +406,7 @@ export function App() {
         setBuildingsGeo(buJson);
         setRoomsGeo(rJson);
         setContext(ctxBundle);
+        setJoggingGeo(jJson);
         setTransitData(tJson);
         setSearchItems(sJson);
         setGraphStats({ nodes: gJson.nodes.length, edges: gJson.edges.length });
@@ -694,7 +714,7 @@ export function App() {
     setActiveBuilding(null);
     setActiveFaculty(null);
     setActiveFloor('all');
-    setSavedSheetOpen(false);
+    setActivePanel('none');
     sendCamera({
       center: UM_CENTER,
       zoom: 15.1,
@@ -705,12 +725,12 @@ export function App() {
 
   const selectFaculty = useCallback(
     (fac: FacultyProps) => {
-      setSavedSheetOpen(false);
       setActivePoi(null);
       setActiveFaculty(fac);
       setActiveBuilding(null);
       setActiveRoom(null);
       setActiveFloor('all');
+      setActivePanel('inspector');
       recordRecentKey(`faculty:${fac.id}`);
       sendCamera({
         center: fac.center,
@@ -725,12 +745,12 @@ export function App() {
   const selectBuilding = useCallback(
     (bld: BuildingProps) => {
       const parentFac = facultyById.get(bld.faculty_id) ?? null;
-      setSavedSheetOpen(false);
       setActivePoi(null);
       setActiveFaculty(parentFac);
       setActiveBuilding(bld);
       setActiveRoom(null);
       setActiveFloor('all');
+      setActivePanel('inspector');
       if (bld.has_rooms) setXrayEnabled(true);
       recordRecentKey(`building:${bld.id}`);
       sendCamera({
@@ -746,12 +766,12 @@ export function App() {
     (room: RoomProps) => {
       const parentFac = facultyById.get(room.faculty_id) ?? null;
       const parentBld = buildingById.get(room.building_id) ?? null;
-      setSavedSheetOpen(false);
       setActivePoi(null);
       setActiveFaculty(parentFac);
       setActiveBuilding(parentBld);
       setActiveRoom(room);
       setActiveFloor(room.floor);
+      setActivePanel('inspector');
       setXrayEnabled(true);
       recordRecentKey(`room:${room.id}`);
       sendCamera({
@@ -772,11 +792,11 @@ export function App() {
             (i.kind === 'gate' || i.kind === 'bus_stop' || i.kind === 'rail_station' || i.kind === 'point'),
         ) ?? null;
       if (!found) return;
-      setSavedSheetOpen(false);
       setActiveFaculty(null);
       setActiveBuilding(null);
       setActiveRoom(null);
       setActivePoi(found);
+      setActivePanel('inspector');
       recordRecentKey(`${found.kind}:${found.id}`);
       sendCamera({
         center: found.center,
@@ -789,7 +809,6 @@ export function App() {
 
   const handleSelectSearchItem = useCallback(
     (item: SearchItem) => {
-      setSavedSheetOpen(false);
       if (item.kind === 'faculty') {
         const fac = facultyById.get(item.id);
         if (fac) selectFaculty(fac);
@@ -804,6 +823,7 @@ export function App() {
         setActiveBuilding(null);
         setActiveRoom(null);
         setActivePoi(item);
+        setActivePanel('inspector');
         recordRecentKey(`${item.kind}:${item.id}`);
         sendCamera({ center: item.center, zoom: item.kind === 'rail_station' ? 16.8 : 17.6, pitch: 52 });
       }
@@ -823,7 +843,7 @@ export function App() {
         setOriginItem(fromIt);
         setDestItem(toIt);
         if (params.mode) setRouteMode(params.mode);
-        setDirectionsOpen(true);
+        setActivePanel('directions');
         return;
       }
     }
@@ -856,8 +876,7 @@ export function App() {
       const dest = resolveTargetToSearchItem(target);
       if (dest) {
         setDestItem(dest);
-        setDirectionsOpen(true);
-        setSavedSheetOpen(false);
+        setActivePanel('directions');
         setPickTarget(null);
         setNavActive(false);
         if (originItem && originItem.id === dest.id) {
@@ -902,8 +921,7 @@ export function App() {
       }
       setDestItem(dest);
       setRouteMode('walk');
-      setDirectionsOpen(true);
-      setSavedSheetOpen(false);
+      setActivePanel('directions');
       setPickTarget(null);
       setNavActive(false);
     },
@@ -915,13 +933,44 @@ export function App() {
       const org = resolveTargetToSearchItem(target);
       if (org) {
         setOriginItem(org);
-        setDirectionsOpen(true);
-        setSavedSheetOpen(false);
+        setActivePanel('directions');
         setPickTarget(null);
         setNavActive(false);
       }
     },
     [resolveTargetToSearchItem],
+  );
+
+  // Location-aware recommended destinations (jogging loops, nearby faculties & landmarks)
+  const recommendations = useMemo(
+    () => buildRecommendedPlaces(userLocation?.coord ?? null, searchItems, joggingGeo, UM_CENTER, 6),
+    [userLocation, searchItems, joggingGeo],
+  );
+
+  const handleNavigateRecommendation = useCallback(
+    (rec: RecommendedPlace) => {
+      const dest = rec.destination;
+      // Pick user's live GPS location when near campus; otherwise keep existing origin or default to UM Main Gate
+      if (userLocation && distMeters(userLocation.coord, UM_CENTER) <= 3000) {
+        setOriginItem(userLocationItem(userLocation));
+      } else if (!originItem || (originItem.id === dest.id && originItem.kind === dest.kind)) {
+        const defaultGate =
+          searchItems.find((i) => i.kind === 'gate' && /main|kl/i.test(i.title)) ??
+          searchItems.find((i) => i.kind === 'gate' && i.id !== dest.id) ??
+          null;
+        if (defaultGate) setOriginItem(defaultGate);
+      }
+
+      if (rec.category === 'jogging') {
+        setVisibility((v) => ({ ...v, joggingRoutes: true }));
+      }
+      setDestItem(dest);
+      setRouteMode(rec.mode);
+      setActivePanel('directions');
+      setPickTarget(null);
+      setNavActive(false);
+    },
+    [userLocation, originItem, searchItems],
   );
 
   // Active place key for bookmarking & sharing
@@ -1010,10 +1059,7 @@ export function App() {
     setNavPaused(false);
     setNavFollow(true);
     setNavActive(true);
-    setLayersOpen(false);
-    setZoneDirectoryOpen(false);
-    setTransitHubOpen(false);
-    setSavedSheetOpen(false);
+    setActivePanel('none');
 
     const startCoord = computedRoute.coordinates[0];
     const nextCoord = computedRoute.coordinates[1] ?? startCoord;
@@ -1073,15 +1119,13 @@ export function App() {
   );
 
   const hasInspectorSelection = Boolean(activeFaculty || activeBuilding || activeRoom || activePoi);
-  const hasLeftSheet = hasInspectorSelection || savedSheetOpen;
+  const inspectorOpen = activePanel === 'inspector' && hasInspectorSelection;
+  const hasLeftSheet = inspectorOpen || savedSheetOpen || layersOpen;
   const floorOffset = directionsOpen || hasLeftSheet ? 524 : 104;
 
   const openDirections = useCallback(() => {
-    setDirectionsOpen(true);
-    setSavedSheetOpen(false);
-    setLayersOpen(false);
-    setZoneDirectoryOpen(false);
-    setTransitHubOpen(false);
+    setActivePanel('directions');
+    setPickTarget(null);
     if (!destItem && (activeRoom || activeBuilding || activeFaculty || activePoi)) {
       if (activeRoom) {
         const it = resolveTargetToSearchItem({ kind: 'room', id: activeRoom.id });
@@ -1104,6 +1148,7 @@ export function App() {
     setActiveBuilding(null);
     setActiveFaculty(null);
     setActiveFloor('all');
+    setActivePanel((prev) => (prev === 'inspector' ? 'none' : prev));
   }, []);
 
   const handleLocate = useCallback(async () => {
@@ -1130,15 +1175,12 @@ export function App() {
         : (await requestUserLocation(true)) ?? userLocation;
     if (!location) return;
     setOriginItem(userLocationItem(location));
-    setDirectionsOpen(true);
-    setSavedSheetOpen(false);
-    setLayersOpen(false);
-    setZoneDirectoryOpen(false);
+    setActivePanel('directions');
     setPickTarget(null);
   }, [userLocation, requestUserLocation]);
 
   const bannerInfo = useMemo(() => {
-    if (navActive || directionsOpen) return null;
+    if (navActive || directionsOpen || layersOpen || savedSheetOpen) return null;
     if (activeRoom) {
       return {
         code: activeFaculty?.code ?? 'RM',
@@ -1169,7 +1211,7 @@ export function App() {
       return { code: undefined, accent: undefined, title: activePoi.title, subtitle: activePoi.subtitle };
     }
     return null;
-  }, [navActive, directionsOpen, activeRoom, activeBuilding, activeFaculty, activePoi]);
+  }, [navActive, directionsOpen, layersOpen, savedSheetOpen, activeRoom, activeBuilding, activeFaculty, activePoi]);
 
   const highlightedTransitRoute = useMemo(() => {
     if (!highlightedTransitId) return null;
@@ -1199,6 +1241,7 @@ export function App() {
         buildings={buildingsGeo}
         rooms={roomsGeo}
         context={context}
+        joggingRoutes={joggingGeo}
         transitGeoJson={transitData.geojson}
         activeFaculty={activeFaculty}
         activeBuilding={activeBuilding}
@@ -1238,7 +1281,12 @@ export function App() {
           <button
             type="button"
             className="rail-item"
-            onClick={() => setSearchFocusSignal((v) => v + 1)}
+            onClick={() => {
+              if (activePanel !== 'none' && activePanel !== 'inspector') {
+                setActivePanel('none');
+              }
+              setSearchFocusSignal((v) => v + 1);
+            }}
             disabled={isMapBusy}
             aria-label="Search"
           >
@@ -1250,7 +1298,7 @@ export function App() {
           <button
             type="button"
             className={`rail-item${zoneDirectoryOpen ? ' is-active' : ''}`}
-            onClick={() => setZoneDirectoryOpen(true)}
+            onClick={() => togglePanel('explore')}
             aria-label="Explore campus zones"
             disabled={navActive}
           >
@@ -1262,7 +1310,7 @@ export function App() {
           <button
             type="button"
             className={`rail-item${transitHubOpen || Boolean(highlightedTransitId) ? ' is-active' : ''}`}
-            onClick={() => setTransitHubOpen(true)}
+            onClick={() => togglePanel('transit')}
             aria-label="Campus transit and shuttle lines"
             disabled={navActive}
           >
@@ -1274,11 +1322,7 @@ export function App() {
           <button
             type="button"
             className={`rail-item${savedSheetOpen ? ' is-active' : ''}`}
-            onClick={() => {
-              setSavedSheetOpen((v) => !v);
-              setDirectionsOpen(false);
-              setLayersOpen(false);
-            }}
+            onClick={() => togglePanel('saved')}
             aria-label="Saved places and recent history"
             disabled={navActive}
           >
@@ -1292,8 +1336,7 @@ export function App() {
             className={`rail-item${directionsOpen ? ' is-active' : ''}`}
             onClick={() => {
               if (directionsOpen) {
-                setDirectionsOpen(false);
-                setPickTarget(null);
+                closeActivePanel();
               } else {
                 openDirections();
               }
@@ -1309,7 +1352,7 @@ export function App() {
           <button
             type="button"
             className={`rail-item${layersOpen ? ' is-active' : ''}`}
-            onClick={() => setLayersOpen((v) => !v)}
+            onClick={() => togglePanel('layers')}
             aria-label="Map layers"
             disabled={navActive}
           >
@@ -1375,8 +1418,11 @@ export function App() {
         savedKeys={savedKeys}
         recentKeys={recentKeys}
         hasLeftSheet={hasLeftSheet}
+        recommendedPlaces={recommendations.items}
+        recommendationsNearby={recommendations.isNearby}
         onChangeChip={setActiveChip}
         onSelectItem={handleSelectSearchItem}
+        onNavigateRecommendation={handleNavigateRecommendation}
         onOpenDirections={openDirections}
         focusSignal={searchFocusSignal}
       />
@@ -1403,7 +1449,7 @@ export function App() {
           <button
             type="button"
             className="m3-btn m3-btn--text m3-btn--sm"
-            onClick={() => setTransitHubOpen(true)}
+            onClick={() => setActivePanel('transit')}
           >
             Stops
           </button>
@@ -1419,7 +1465,7 @@ export function App() {
       )}
 
       <SavedPlacesSheet
-        open={savedSheetOpen && !directionsOpen && !navActive}
+        open={savedSheetOpen && !navActive}
         savedItems={savedItems}
         recentItems={recentItems}
         onSelectItem={(item) => {
@@ -1427,8 +1473,7 @@ export function App() {
         }}
         onNavigateToItem={(item) => {
           setDestItem(item);
-          setDirectionsOpen(true);
-          setSavedSheetOpen(false);
+          setActivePanel('directions');
         }}
         onRemoveSaved={(key) => {
           setSavedKeys((prev) => toggleSavedPlace(prev, key));
@@ -1438,10 +1483,10 @@ export function App() {
           setSavedKeys(DEFAULT_SAVED_KEYS);
           setLocationNotice('Added UM campus essentials to Saved');
         }}
-        onClose={() => setSavedSheetOpen(false)}
+        onClose={closeActivePanel}
       />
 
-      {!directionsOpen && !navActive && !savedSheetOpen && (
+      {inspectorOpen && !navActive && (
         <InspectorPanel
           faculty={activeFaculty}
           building={activeBuilding}
@@ -1508,10 +1553,7 @@ export function App() {
         onStartNavigation={handleStartNavigation}
         onShareRoute={handleShareRoute}
         onSelectStep={handleSelectStep}
-        onClose={() => {
-          setDirectionsOpen(false);
-          setPickTarget(null);
-        }}
+        onClose={closeActivePanel}
       />
 
       {navActive && computedRoute && (
@@ -1566,9 +1608,8 @@ export function App() {
         activeZoneId={activeFaculty?.id}
         onSelectZone={(zone) => {
           selectFaculty(zone);
-          setZoneDirectoryOpen(false);
         }}
-        onClose={() => setZoneDirectoryOpen(false)}
+        onClose={closeActivePanel}
       />
 
       <TransitHubModal
@@ -1577,19 +1618,18 @@ export function App() {
         highlightedRouteId={highlightedTransitId}
         onHighlightRoute={handleHighlightTransitRoute}
         onSelectStop={(stop, route) => {
-          setTransitHubOpen(false);
+          closeActivePanel();
           sendCamera({ center: stop.coord, zoom: 17.8, pitch: 54 });
           setLocationNotice(`${route.code} · ${stop.name}`);
         }}
         onNavigateToStop={(stop) => {
-          setTransitHubOpen(false);
           handleNavigateToCoord(stop.coord, stop.name);
         }}
-        onClose={() => setTransitHubOpen(false)}
+        onClose={closeActivePanel}
       />
 
       <LayerControls
-        open={layersOpen && !isMapBusy}
+        open={layersOpen && !navActive}
         visibility={visibility}
         is3D={is3D}
         darkMode={darkMode}
@@ -1597,7 +1637,7 @@ export function App() {
         onToggle3D={() => setIs3D((v) => !v)}
         onToggleDarkMode={() => setDarkMode((v) => !v)}
         onResetCampus={resetToCampus}
-        onClose={() => setLayersOpen(false)}
+        onClose={closeActivePanel}
         stats={{
           faculties: allFaculties.length,
           buildings: allBuildings.filter((b) => !b.is_canopy).length,
@@ -1612,7 +1652,12 @@ export function App() {
         <button
           type="button"
           className="mobile-bar__item"
-          onClick={() => setSearchFocusSignal((v) => v + 1)}
+          onClick={() => {
+            if (activePanel !== 'none' && activePanel !== 'inspector') {
+              setActivePanel('none');
+            }
+            setSearchFocusSignal((v) => v + 1);
+          }}
           disabled={isMapBusy}
         >
           <Icon name="search" size={20} />
@@ -1621,7 +1666,7 @@ export function App() {
         <button
           type="button"
           className={`mobile-bar__item${zoneDirectoryOpen ? ' is-active' : ''}`}
-          onClick={() => setZoneDirectoryOpen(true)}
+          onClick={() => togglePanel('explore')}
           disabled={navActive}
         >
           <Icon name="zones" size={20} />
@@ -1630,7 +1675,7 @@ export function App() {
         <button
           type="button"
           className={`mobile-bar__item${transitHubOpen || Boolean(highlightedTransitId) ? ' is-active' : ''}`}
-          onClick={() => setTransitHubOpen(true)}
+          onClick={() => togglePanel('transit')}
           disabled={navActive}
         >
           <Icon name="bus" size={20} />
@@ -1639,10 +1684,7 @@ export function App() {
         <button
           type="button"
           className={`mobile-bar__item${savedSheetOpen ? ' is-active' : ''}`}
-          onClick={() => {
-            setSavedSheetOpen((v) => !v);
-            setDirectionsOpen(false);
-          }}
+          onClick={() => togglePanel('saved')}
           disabled={navActive}
         >
           <Icon name={savedKeys.length > 0 ? 'bookmarkFilled' : 'bookmark'} size={20} />
@@ -1653,8 +1695,7 @@ export function App() {
           className={`mobile-bar__item${directionsOpen ? ' is-active' : ''}`}
           onClick={() => {
             if (directionsOpen) {
-              setDirectionsOpen(false);
-              setPickTarget(null);
+              closeActivePanel();
             } else {
               openDirections();
             }
@@ -1667,7 +1708,7 @@ export function App() {
         <button
           type="button"
           className={`mobile-bar__item${layersOpen ? ' is-active' : ''}`}
-          onClick={() => setLayersOpen((v) => !v)}
+          onClick={() => togglePanel('layers')}
           disabled={navActive}
         >
           <Icon name="layers" size={20} />

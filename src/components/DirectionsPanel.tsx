@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon, type IconName } from './Icon';
+import { useBottomSheetDrag } from '../hooks/useBottomSheetDrag';
 import { computeWalkMetrics, type ModeComparison } from '../utils/atlasUtils';
 import type { ComputedRoute, RouteMode, RouteStep, SearchItem } from '../types/map';
 
@@ -239,31 +240,54 @@ export function DirectionsPanel({
     }
   }, [pickTarget]);
 
+  const { isDragging, dragStyle, handleProps } = useBottomSheetDrag(collapsed, setCollapsed);
+
   if (!open || navActive) return null;
 
+  const peekCaption = pickTarget
+    ? `Tap map to set ${pickTarget === 'origin' ? 'starting point' : 'destination'}`
+    : route
+      ? `${Math.max(1, Math.round(route.estimatedMinutes))} min · ${formatDistance(route.totalDistanceM)}${
+          destination ? ` · ${destination.title}` : ''
+        }`
+      : 'Choose start and destination';
+
   return (
-    <aside className={`directions m3-panel${collapsed ? ' is-collapsed' : ''}`} aria-label="Directions">
-      <button
-        type="button"
-        className="sheet-handle"
-        onClick={() => setCollapsed((value) => !value)}
-        aria-label={collapsed ? 'Expand directions' : 'Collapse directions'}
-        aria-expanded={!collapsed}
-      >
-        <span className="sheet-handle__grip" />
-      </button>
-      <div className="directions__head">
-        <div>
-          <p className="m3-title" style={{ fontSize: 19 }}>
-            Directions
-          </p>
-          <p className="m3-caption">
-            {pickTarget ? 'Tap the map to set a point' : 'Multi-modal campus walking, shuttle and driving'}
-          </p>
-        </div>
-        <button type="button" className="m3-icon-btn" onClick={onClose} aria-label="Close directions">
-          <Icon name="close" size={18} />
+    <aside
+      className={`directions m3-panel${collapsed ? ' is-collapsed' : ''}${isDragging ? ' is-dragging' : ''}`}
+      style={dragStyle}
+      aria-label="Directions"
+    >
+      <div className="sheet-drag-zone" {...handleProps}>
+        <button
+          type="button"
+          className="sheet-handle"
+          aria-label={collapsed ? 'Expand directions' : 'Collapse directions'}
+          aria-expanded={!collapsed}
+        >
+          <span className="sheet-handle__grip" />
         </button>
+        <div className="directions__head">
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <p className="m3-title" style={{ fontSize: 18 }}>
+              {collapsed && route ? `${Math.max(1, Math.round(route.estimatedMinutes))} min (${formatDistance(route.totalDistanceM)})` : 'Directions'}
+            </p>
+            <p className="m3-caption" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {collapsed ? (destination ? `To ${destination.title}` : peekCaption) : pickTarget ? 'Tap the map to set a point' : 'Campus walking, shuttle and driving'}
+            </p>
+          </div>
+          <div className="sheet-head-actions">
+            {collapsed && route && (
+              <button type="button" className="m3-btn m3-btn--filled m3-btn--sm" onClick={onStartNavigation}>
+                <Icon name="directions" size={14} />
+                Start
+              </button>
+            )}
+            <button type="button" className="m3-icon-btn m3-icon-btn--sm" onClick={onClose} aria-label="Close directions">
+              <Icon name="close" size={16} />
+            </button>
+          </div>
+        </div>
       </div>
 
       <div className="directions__form">

@@ -10,37 +10,37 @@ import type { FacultyProps } from './types/map';
 export type ZoneKind = NonNullable<FacultyProps['zone_kind']>;
 
 export const ZONE_FILLS = [
-  '#e3e9fb',
-  '#e2eff7',
-  '#e4f0e9',
-  '#eae6f8',
-  '#f7ebe4',
-  '#e8eef3',
-  '#f1ecf7',
-  '#eef2e3',
-  '#f8e9ee',
-  '#e5f0f1',
+  '#e8f0fe',
+  '#e6f4ea',
+  '#fef3e2',
+  '#e8eef2',
+  '#f3eee8',
+  '#e4f2f1',
+  '#f4f1e6',
+  '#ebeef5',
+  '#f6ecea',
+  '#eaf3ea',
 ];
 
 export const ZONE_ACCENTS = [
-  '#33549e',
-  '#2c6a86',
-  '#2f7666',
-  '#5b52a0',
-  '#8d5a3d',
-  '#446c84',
-  '#6b5a9e',
-  '#66763f',
-  '#944c66',
-  '#38717a',
+  '#1a73e8',
+  '#1e7e4f',
+  '#b06000',
+  '#4c6b82',
+  '#7a5c47',
+  '#1d7a74',
+  '#6e7039',
+  '#4f658a',
+  '#9c4a47',
+  '#2e7d5b',
 ];
 
 const KIND_FALLBACK: Record<string, string> = {
-  faculty: '#33549e',
-  college: '#5b52a0',
-  institute: '#2c6a86',
-  medical: '#446c84',
-  landmark: '#66763f',
+  faculty: '#1a73e8',
+  college: '#6b5b47',
+  institute: '#1d7a74',
+  medical: '#c53929',
+  landmark: '#2e7d5b',
 };
 
 export function zoneAccent(kind?: string | null): string {

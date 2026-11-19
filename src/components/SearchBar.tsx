@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon, type IconName } from './Icon';
 import type { SearchItem } from '../types/map';
+import type { RecommendedPlace } from '../utils/atlasUtils';
 
 export type SearchFilterChip =
   | 'all'
@@ -19,8 +20,11 @@ interface SearchBarProps {
   navActive: boolean;
   hasLeftSheet: boolean;
   activeChip: SearchFilterChip;
+  recommendedPlaces: RecommendedPlace[];
+  recommendationsNearby: boolean;
   onChangeChip: (chip: SearchFilterChip) => void;
   onSelectItem: (item: SearchItem) => void;
+  onNavigateRecommendation: (rec: RecommendedPlace) => void;
   onOpenDirections: () => void;
   focusSignal?: number;
 }
@@ -45,6 +49,13 @@ const ICON_FOR_KIND: Record<string, IconName> = {
   point: 'pin',
 };
 
+const REC_ICON: Record<RecommendedPlace['category'], IconName> = {
+  jogging: 'walk',
+  faculty: 'graduation',
+  landmark: 'pin',
+  transit: 'train',
+};
+
 export function SearchBar({
   items,
   savedKeys,
@@ -53,8 +64,11 @@ export function SearchBar({
   navActive,
   hasLeftSheet,
   activeChip,
+  recommendedPlaces,
+  recommendationsNearby,
   onChangeChip,
   onSelectItem,
+  onNavigateRecommendation,
   onOpenDirections,
   focusSignal = 0,
 }: SearchBarProps) {
@@ -163,15 +177,18 @@ export function SearchBar({
       if (!tokens.every((t) => hay.includes(t))) continue;
 
       let score = 0;
-      if (titleL === q) score += 120;
-      else if (titleL.startsWith(q)) score += 75;
+      const idL = it.id.toLowerCase();
+      if (it.kind === 'faculty' && idL === q) score += 220;
+      else if (titleL === q) score += 160;
+      else if (it.kind === 'faculty' && (titleL.includes(`(${q}`) || it.subtitle.toLowerCase().startsWith(q))) score += 150;
+      else if (titleL.startsWith(q)) score += 85;
       else if (titleL.includes(q)) score += 45;
       else score += 20;
 
       const key = `${it.kind}:${it.id}`;
       if (savedSet.has(key)) score += 18;
+      if (it.kind === 'faculty') score += 22;
       if (it.kind === 'rail_station') score += 16;
-      if (it.kind === 'faculty') score += 12;
       if (it.kind === 'building' && it.has_rooms) score += 8;
       if (it.kind === 'room') score += 5;
 
@@ -266,27 +283,55 @@ export function SearchBar({
 
       {/* Persistent M3 Filter Chips Bar on map when dropdown & inspector are closed */}
       {!focused && !hasLeftSheet && (
-        <div className="search-chips no-scrollbar" role="tablist" aria-label="Quick category filter">
-          {CHIPS.map((c) => {
-            const selected = activeChip === c.id;
-            return (
-              <button
-                key={c.id}
-                type="button"
-                role="tab"
-                aria-selected={selected}
-                className={`m3-chip m3-chip--elevated${selected ? ' is-selected' : ''}`}
-                onClick={() => {
-                  onChangeChip(c.id);
-                  setFocused(true);
-                }}
-              >
-                <Icon name={selected ? 'check' : c.icon} size={14} />
-                <span>{c.label}</span>
-              </button>
-            );
-          })}
-        </div>
+        <>
+          <div className="search-chips no-scrollbar" role="tablist" aria-label="Quick category filter">
+            {CHIPS.map((c) => {
+              const selected = activeChip === c.id;
+              return (
+                <button
+                  key={c.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={selected}
+                  className={`m3-chip m3-chip--elevated${selected ? ' is-selected' : ''}`}
+                  onClick={() => {
+                    onChangeChip(c.id);
+                    setFocused(true);
+                  }}
+                >
+                  <Icon name={selected ? 'check' : c.icon} size={14} />
+                  <span>{c.label}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {recommendedPlaces.length > 0 && (
+            <div
+              className="search-recs no-scrollbar"
+              aria-label={recommendationsNearby ? 'Recommended places near your location' : 'Suggested campus directions'}
+            >
+              <span className="search-recs__label">
+                {recommendationsNearby ? 'Near you' : 'Quick go'}
+              </span>
+              {recommendedPlaces.map((rec) => (
+                <button
+                  key={rec.id}
+                  type="button"
+                  className={`rec-chip${rec.category === 'jogging' ? ' rec-chip--jog' : ''}`}
+                  onClick={() => onNavigateRecommendation(rec)}
+                  title={`Get directions to ${rec.destination.title}`}
+                >
+                  <Icon name={REC_ICON[rec.category]} size={13} />
+                  <span>{rec.label}</span>
+                  {rec.distanceLabel && (
+                    <span className="rec-chip__dist">{rec.distanceLabel}</span>
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+        </>
       )}
 
       {focused && (
@@ -336,8 +381,8 @@ export function SearchBar({
                     className={`search-result${idx === highlightIdx ? ' is-active' : ''}`}
                     onMouseDown={(e) => {
                       e.preventDefault();
-                      pickItem(it);
                     }}
+                    onClick={() => pickItem(it)}
                     onMouseEnter={() => setHighlightIdx(idx)}
                   >
                     <span className="search-result__icon">

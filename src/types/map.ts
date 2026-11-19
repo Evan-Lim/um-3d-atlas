@@ -153,6 +153,7 @@ export interface MapLayerVisibility {
   faculties: boolean;
   roads: boolean;
   pathways: boolean;
+  joggingRoutes: boolean;
   busRoutes: boolean;
   buildings3d: boolean;
   pois: boolean;
