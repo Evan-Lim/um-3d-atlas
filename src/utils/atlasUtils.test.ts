@@ -2,18 +2,43 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildAtlasShareUrl,
+  buildZoneSpatialIndex,
+  computeBikeMetrics,
   computeWalkMetrics,
   findNearbyStops,
+  findZoneAtCoord,
+  optimizeStopOrder,
   parseAtlasUrlParams,
   persistDarkMode,
   pushRecentPlace,
   readPersistedDarkMode,
   resolvePanelToggle,
   resolveSheetDragOutcome,
+  resolveZoneTransition,
   THEME_STORAGE_KEY,
   toggleSavedPlace,
 } from './atlasUtils';
-import type { ComputedRoute, TransitRoute } from '../types/map';
+import { CampusRouter } from '../routing/pathfinder';
+import {
+  computeRemainingElevation,
+  computeRouteElevationProfile,
+  sampleElevation,
+} from './elevationUtils';
+import {
+  buildDiurnalFallbackWeather,
+  classifyHeatLevel,
+  computeEffectiveHeatIndexC,
+  parseOpenMeteoForecast,
+  predictPrecipitation,
+} from './weatherUtils';
+import type {
+  ComputedRoute,
+  ElevationGridData,
+  FacultyProps,
+  GraphData,
+  SearchItem,
+  TransitRoute,
+} from '../types/map';
 
 const SAMPLE_ROUTES: TransitRoute[] = [
   {
@@ -200,5 +225,413 @@ test('buildRecommendedPlaces ranks nearby jogging loop, faculties, and landmarks
   assert.ok(fallback.items.some((i) => i.destination.id === 'LIB'));
   assert.ok(fallback.items.some((i) => i.destination.id === 'EXAM'));
 });
+
+function makePoint(id: string, lon: number, lat: number, entranceNode = -1): SearchItem {
+  return {
+    id,
+    kind: 'building',
+    title: id,
+    subtitle: 'UM Campus',
+    keywords: id.toLowerCase(),
+    center: [lon, lat],
+    entrance_node: entranceNode,
+  };
+}
+
+test('parseAtlasUrlParams and buildAtlasShareUrl round-trip bike mode and multi-stop params', () => {
+  const shareUrl = buildAtlasShareUrl('https://example.com/', {
+    fromKey: 'gate:gate-main',
+    stopKeys: ['faculty:LIB', 'faculty:FSKTM', 'faculty:EXAM'],
+    toKey: 'faculty:FK',
+    mode: 'bike',
+  });
+  const parsed = parseAtlasUrlParams(new URL(shareUrl).search);
+  assert.equal(parsed.fromKey, 'gate:gate-main');
+  assert.deepEqual(parsed.stopKeys, ['faculty:LIB', 'faculty:FSKTM', 'faculty:EXAM']);
+  assert.equal(parsed.toKey, 'faculty:FK');
+  assert.equal(parsed.mode, 'bike');
+});
+
+test('optimizeStopOrder finds exact shortest order for <=10 stops and improves 12+ stops with 2-opt', () => {
+  // Points along a line from west (0) to east (5)
+  const origin = makePoint('A', 101.650, 3.120);
+  const s1 = makePoint('S1', 101.651, 3.120);
+  const s2 = makePoint('S2', 101.652, 3.120);
+  const s3 = makePoint('S3', 101.653, 3.120);
+  const s4 = makePoint('S4', 101.654, 3.120);
+  const dest = makePoint('B', 101.655, 3.120);
+
+  // Scrambled order: S4 -> S1 -> S3 -> S2
+  const res = optimizeStopOrder(origin, [s4, s1, s3, s2], dest);
+  assert.equal(res.changed, true);
+  assert.ok(res.savedDistanceM > 300);
+  assert.deepEqual(
+    res.orderedStops.map((s) => s.id),
+    ['S1', 'S2', 'S3', 'S4'],
+  );
+
+  // Already optimal
+  const already = optimizeStopOrder(origin, [s1, s2, s3, s4], dest);
+  assert.equal(already.changed, false);
+  assert.equal(already.savedDistanceM, 0);
+
+  // 12 stops in scrambled zigzag order (exercises NN + 2-opt path)
+  const manyDest = makePoint('END', 101.663, 3.120);
+  const orderedMany = Array.from({ length: 12 }, (_, i) =>
+    makePoint(`M${i + 1}`, 101.650 + (i + 1) * 0.001, 3.120),
+  );
+  const scrambledMany = [
+    orderedMany[11],
+    orderedMany[0],
+    orderedMany[9],
+    orderedMany[2],
+    orderedMany[7],
+    orderedMany[4],
+    orderedMany[10],
+    orderedMany[1],
+    orderedMany[8],
+    orderedMany[3],
+    orderedMany[6],
+    orderedMany[5],
+  ];
+  const bigRes = optimizeStopOrder(origin, scrambledMany, manyDest);
+  assert.equal(bigRes.changed, true);
+  assert.ok(bigRes.savedDistanceM > 2000);
+  assert.equal(bigRes.orderedStops.length, 12);
+});
+
+test('buildZoneSpatialIndex, findZoneAtCoord, and resolveZoneTransition detect nested zones & crossings', () => {
+  const makeFacProps = (id: string, code: string, name: string): FacultyProps => ({
+    id,
+    code,
+    zone_kind: 'faculty',
+    name,
+    name_ms: name,
+    category: 'Faculty',
+    color: '#e8f0fe',
+    website: '',
+    center: [101.652, 3.122],
+    zoom: 17,
+    pitch: 50,
+    bearing: 0,
+    description: '',
+    osm_ref: '',
+  });
+
+  const geo: GeoJSON.FeatureCollection = {
+    type: 'FeatureCollection',
+    features: [
+      {
+        type: 'Feature',
+        properties: makeFacProps('OUTER', 'OUTER', 'Outer Precinct'),
+        geometry: {
+          type: 'Polygon',
+          coordinates: [
+            [
+              [101.650, 3.120],
+              [101.656, 3.120],
+              [101.656, 3.126],
+              [101.650, 3.126],
+              [101.650, 3.120],
+            ],
+          ],
+        },
+      },
+      {
+        type: 'Feature',
+        properties: { ...makeFacProps('LIB', 'LIB', 'Main Library'), zone_kind: 'landmark' },
+        geometry: {
+          type: 'Polygon',
+          coordinates: [
+            [
+              [101.652, 3.122],
+              [101.654, 3.122],
+              [101.654, 3.124],
+              [101.652, 3.124],
+              [101.652, 3.122],
+            ],
+          ],
+        },
+      },
+      {
+        type: 'Feature',
+        properties: makeFacProps('FSKTM', 'FSKTM', 'Computer Science'),
+        geometry: {
+          type: 'MultiPolygon',
+          coordinates: [
+            [
+              [
+                [101.658, 3.120],
+                [101.660, 3.120],
+                [101.660, 3.122],
+                [101.658, 3.122],
+                [101.658, 3.120],
+              ],
+            ],
+          ],
+        },
+      },
+    ],
+  };
+
+  const idx = buildZoneSpatialIndex(geo);
+  // Smaller nested LIB polygon takes priority over OUTER
+  const insideLib = findZoneAtCoord([101.653, 3.123], idx);
+  assert.equal(insideLib?.id, 'LIB');
+
+  // Outside LIB but inside OUTER
+  const insideOuter = findZoneAtCoord([101.651, 3.121], idx);
+  assert.equal(insideOuter?.id, 'OUTER');
+
+  // Inside MultiPolygon FSKTM
+  const insideFsktm = findZoneAtCoord([101.659, 3.121], idx);
+  assert.equal(insideFsktm?.id, 'FSKTM');
+
+  // Outside all zones (corridor)
+  const corridor = findZoneAtCoord([101.657, 3.121], idx);
+  assert.equal(corridor, null);
+
+  assert.equal(resolveZoneTransition(null, null), null);
+  assert.equal(resolveZoneTransition(insideLib, insideLib), null);
+  assert.equal(resolveZoneTransition(null, insideLib)?.type, 'enter');
+  assert.equal(resolveZoneTransition(insideLib, null)?.type, 'leave');
+  assert.equal(resolveZoneTransition(insideOuter, insideLib)?.type, 'cross');
+});
+
+test('CampusRouter bicycle mode avoids stairs and multi-stop chains numbered waypoints', () => {
+  // Mini graph:
+  // 0 (Start) --[steps, 50m]--> 1 (Mid) --[road, 120m]--> 3 (End)
+  // 0 (Start) --[road, 100m]--> 2 (Detour) --[footway, 90m]--> 1 (Mid)
+  const miniGraph: GraphData = {
+    nodes: [
+      [101.650, 3.120], // 0
+      [101.651, 3.120], // 1
+      [101.6505, 3.1208], // 2
+      [101.652, 3.120], // 3
+    ],
+    edges: [
+      [0, 1, 50, 3, 0, 'Short Stairway'],
+      [0, 2, 100, 0, 3, 'Lingkungan Budi'],
+      [2, 1, 90, 1, 2, 'Paved Bike Path'],
+      [1, 3, 120, 0, 3, 'Jalan Universiti'],
+    ],
+  };
+
+  const router = new CampusRouter(miniGraph);
+  const start = makePoint('Start', 101.650, 3.120, 0);
+  const mid = makePoint('Mid Stop', 101.651, 3.120, 1);
+  const end = makePoint('End', 101.652, 3.120, 3);
+
+  // Walk (normal) can take the shorter stairs
+  const walkRoute = router.computeRoute(start, mid, 'walk', { stepFree: false });
+  assert.ok(walkRoute);
+  assert.equal(walkRoute.stepsCount, 1);
+
+  // Bike strictly avoids stairs and routes via road + paved path
+  const bikeRoute = router.computeRoute(start, mid, 'bike');
+  assert.ok(bikeRoute);
+  assert.equal(bikeRoute.mode, 'bike');
+  assert.equal(bikeRoute.stepsCount, 0);
+  assert.equal(bikeRoute.totalDistanceM, 190);
+  const bikeStats = computeBikeMetrics(bikeRoute);
+  assert.ok(bikeStats.kcalEstimate > 0);
+  assert.ok(bikeStats.roadRatio > 0.4);
+
+  // Multi-stop chaining: Start -> Mid Stop -> End
+  const multi = router.computeMultiStopRoute(start, [mid], end, 'bike');
+  assert.ok(multi);
+  assert.equal(multi.waypoints?.length, 1);
+  assert.equal(multi.waypoints?.[0].index, 1);
+  assert.equal(multi.waypoints?.[0].label, 'Mid Stop');
+  assert.ok(multi.steps.some((s) => s.kind === 'waypoint' && s.waypointIndex === 1));
+  assert.equal(multi.totalDistanceM, 310);
+});
+
+test('sampleElevation performs accurate bilinear interpolation and rejects out-of-bounds coords', () => {
+  const grid: ElevationGridData = {
+    source: 'test',
+    units: 'decimeters_asl',
+    scale: 10,
+    minLon: 101.650,
+    maxLon: 101.660,
+    minLat: 3.110,
+    maxLat: 3.120,
+    cols: 2,
+    rows: 2,
+    minM: 40,
+    maxM: 80,
+    // row 0 (lat 3.110): [40.0m, 60.0m], row 1 (lat 3.120): [60.0m, 80.0m]
+    values: [400, 600, 600, 800],
+  };
+
+  assert.equal(sampleElevation([101.650, 3.110], grid), 40);
+  assert.equal(sampleElevation([101.660, 3.120], grid), 80);
+  assert.equal(sampleElevation([101.655, 3.115], grid), 60);
+  assert.equal(sampleElevation([101.640, 3.115], grid), null);
+  assert.equal(sampleElevation([101.655, 3.130], grid), null);
+});
+
+test('computeRouteElevationProfile calculates ascent/descent, steep-hill step tags, and remaining climb', () => {
+  // 3x2 grid going west -> east: 40m -> 70m (steep uphill) -> 45m (steep downhill)
+  const grid: ElevationGridData = {
+    source: 'test-hill',
+    units: 'decimeters_asl',
+    scale: 10,
+    minLon: 101.650,
+    maxLon: 101.656,
+    minLat: 3.118,
+    maxLat: 3.122,
+    cols: 3,
+    rows: 2,
+    minM: 40,
+    maxM: 70,
+    values: [400, 700, 450, 400, 700, 450],
+  };
+
+  const mockRoute: ComputedRoute = {
+    mode: 'walk',
+    stepFreeUsed: false,
+    coordinates: [
+      [101.650, 3.120],
+      [101.653, 3.120],
+      [101.656, 3.120],
+    ],
+    segments: [],
+    totalDistanceM: 666,
+    estimatedMinutes: 8,
+    shortcutCount: 0,
+    stepsCount: 0,
+    busRoutesUsed: [],
+    steps: [
+      {
+        instruction: 'Climb Bukit Cinta path',
+        detail: 'Campus road',
+        distanceM: 333,
+        kind: 'road',
+        coord: [101.650, 3.120],
+      },
+      {
+        instruction: 'Waypoint 1',
+        detail: 'Peak',
+        distanceM: 0,
+        kind: 'waypoint',
+        waypointIndex: 1,
+        coord: [101.653, 3.120],
+      },
+      {
+        instruction: 'Descend toward Tasik Varsiti',
+        detail: 'Footpath',
+        distanceM: 333,
+        kind: 'footway',
+        coord: [101.653, 3.120],
+      },
+    ],
+    waypoints: [{ index: 1, label: 'Hilltop', coord: [101.653, 3.120] }],
+    originLabel: 'Start',
+    destLabel: 'End',
+  };
+
+  const profile = computeRouteElevationProfile(mockRoute, grid);
+  assert.ok(profile);
+  assert.ok(profile.totalGainM >= 25 && profile.totalGainM <= 32);
+  assert.ok(profile.totalDropM >= 20 && profile.totalDropM <= 27);
+  assert.equal(profile.steepClimbCount, 1);
+  assert.equal(profile.steepDescentCount, 1);
+  assert.equal(profile.stepElevations[0]?.hillTag, 'steep-climb');
+  assert.equal(profile.stepElevations[1], null); // waypoint skipped
+  assert.equal(profile.stepElevations[2]?.hillTag, 'steep-descent');
+  assert.equal(profile.waypointOffsets.length, 1);
+
+  // Midway at crest: almost no climb left, ~25m descent left
+  const remCrest = computeRemainingElevation(profile, 333);
+  assert.ok(remCrest);
+  assert.ok(remCrest.remainingGainM <= 2);
+  assert.ok(remCrest.remainingDropM >= 20);
+});
+
+test('weather comfort predictor classifies heat severity, rain likelihood, Open-Meteo parsing, and KL diurnal fallback', () => {
+  assert.equal(classifyHeatLevel(25.5).level, 'cool');
+  assert.equal(classifyHeatLevel(29.0).level, 'warm');
+  assert.equal(classifyHeatLevel(33.2).level, 'hot');
+  assert.equal(classifyHeatLevel(36.5).level, 'very-hot');
+  assert.equal(classifyHeatLevel(39.0).level, 'extreme');
+
+  // Peak midday sun raises effective thermal load compared to cloudy night
+  const middaySun = computeEffectiveHeatIndexC({
+    apparentTempC: 34.0,
+    uvIndex: 9,
+    cloudCoverPct: 15,
+    hour24: 13,
+    precipitationMm: 0,
+  });
+  const nightClear = computeEffectiveHeatIndexC({
+    apparentTempC: 34.0,
+    uvIndex: 0,
+    cloudCoverPct: 15,
+    hour24: 22,
+    precipitationMm: 0,
+  });
+  assert.ok(middaySun > nightClear + 1.0);
+
+  // Active rainfall overrides to 'raining'
+  const activeRain = predictPrecipitation({
+    precipitationMm: 2.4,
+    weatherCode: 63,
+    hourlyPopWindow: [40, 50],
+    humidityPct: 88,
+    cloudCoverPct: 95,
+    hour24: 16,
+  });
+  assert.equal(activeRain.level, 'raining');
+  assert.ok(activeRain.chancePct >= 85);
+
+  // Parse live Open-Meteo payload
+  const parsed = parseOpenMeteoForecast(
+    {
+      current: {
+        time: '2026-11-20T15:00',
+        temperature_2m: 32.4,
+        apparent_temperature: 36.1,
+        relative_humidity_2m: 74,
+        is_day: 1,
+        precipitation: 0,
+        rain: 0,
+        weather_code: 2,
+        cloud_cover: 60,
+        wind_speed_10m: 8,
+      },
+      hourly: {
+        time: [
+          '2026-11-20T15:00',
+          '2026-11-20T16:00',
+          '2026-11-20T17:00',
+          '2026-11-20T18:00',
+        ],
+        temperature_2m: [32.4, 31.8, 30.2, 29.0],
+        apparent_temperature: [36.1, 35.0, 33.4, 32.1],
+        precipitation_probability: [45, 75, 65, 30],
+        precipitation: [0, 1.2, 0.5, 0],
+        uv_index: [8.2, 6.0, 3.1, 0.8],
+        weather_code: [2, 80, 61, 3],
+      },
+    },
+    new Date('2026-11-20T07:15:00Z'), // 15:15 MYT
+  );
+  assert.ok(parsed);
+  assert.equal(parsed.source, 'live');
+  assert.equal(parsed.localHour24, 15);
+  assert.ok(parsed.heatLevel === 'very-hot' || parsed.heatLevel === 'hot');
+  assert.ok(parsed.rainChancePct >= 65);
+  assert.equal(parsed.hourlyOutlook.length, 4);
+
+  // KL diurnal offline fallback adapts cleanly between dawn (06:00 MYT) and afternoon (15:00 MYT)
+  const dawnEst = buildDiurnalFallbackWeather(new Date('2026-11-19T22:00:00Z')); // 06:00 MYT
+  const afternoonEst = buildDiurnalFallbackWeather(new Date('2026-11-20T07:00:00Z')); // 15:00 MYT
+  assert.equal(dawnEst.source, 'estimate');
+  assert.ok(afternoonEst.feelsLikeC > dawnEst.feelsLikeC + 3);
+  assert.ok(afternoonEst.rainChancePct > dawnEst.rainChancePct);
+});
+
+
 
 

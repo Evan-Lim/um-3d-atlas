@@ -10,7 +10,9 @@ import type {
   ComputedRoute,
   FacultyProps,
   MapLayerVisibility,
+  PickTarget,
   RoomProps,
+  RouteWaypoint,
   UserLocation,
 } from '../types/map';
 import { zoneAccent } from '../theme';
@@ -53,7 +55,8 @@ interface UmMapCanvasProps {
   route: ComputedRoute | null;
   originCoord: [number, number] | null;
   destCoord: [number, number] | null;
-  pickTarget: 'origin' | 'destination' | null;
+  stopWaypoints?: RouteWaypoint[];
+  pickTarget: PickTarget;
   cameraCmd: CameraCommand | null;
   liveNavActive: boolean;
   liveNavCoord: [number, number] | null;
@@ -65,6 +68,7 @@ interface UmMapCanvasProps {
   onSelectRoom: (r: RoomProps) => void;
   onSelectPoi: (id: string) => void;
   onPickCoordinate: (coord: [number, number], labelHint?: string) => void;
+  onCenterChange?: (coord: [number, number]) => void;
 }
 
 const UM_DEFAULT_CENTER: [number, number] = [101.6538, 3.1209];
@@ -418,6 +422,7 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
     route,
     originCoord,
     destCoord,
+    stopWaypoints = [],
     pickTarget,
     cameraCmd,
     liveNavActive,
@@ -433,6 +438,7 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
   const popupRef = useRef<maplibregl.Popup | null>(null);
   const originMarkerRef = useRef<maplibregl.Marker | null>(null);
   const destMarkerRef = useRef<maplibregl.Marker | null>(null);
+  const stopMarkersRef = useRef<maplibregl.Marker[]>([]);
   const liveNavMarkerRef = useRef<maplibregl.Marker | null>(null);
   const userMarkerRef = useRef<maplibregl.Marker | null>(null);
   const coneElRef = useRef<HTMLDivElement | null>(null);
@@ -1728,6 +1734,19 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
       }
     });
 
+    let lastCenterEmit = 0;
+    const emitCenter = (force: boolean) => {
+      const cb = latestRef.current.onCenterChange;
+      if (!cb) return;
+      const now = performance.now();
+      if (!force && now - lastCenterEmit < 180) return;
+      lastCenterEmit = now;
+      const c = map.getCenter();
+      cb([c.lng, c.lat]);
+    };
+    map.on('move', () => emitCenter(false));
+    map.on('moveend', () => emitCenter(true));
+
     // Interactive cursor + clean hover tooltips (including jogging loops & selected cutaway rooms)
     const hoverTargets = [
       'um-room-selected-3d',
@@ -1918,6 +1937,8 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
       window.clearTimeout(fallbackTimer);
       originMarkerRef.current?.remove();
       destMarkerRef.current?.remove();
+      for (const m of stopMarkersRef.current) m.remove();
+      stopMarkersRef.current = [];
       liveNavMarkerRef.current?.remove();
       userMarkerRef.current?.remove();
       hoverPopup.remove();
@@ -1953,7 +1974,7 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
     mapReadySeq,
   ]);
 
-  // Sync active route line & A/B pins
+  // Sync active route line & A / 1..N / B pins
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !readyRef.current) return;
@@ -1965,8 +1986,10 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
 
     originMarkerRef.current?.remove();
     destMarkerRef.current?.remove();
+    for (const m of stopMarkersRef.current) m.remove();
     originMarkerRef.current = null;
     destMarkerRef.current = null;
+    stopMarkersRef.current = [];
 
     const makePin = (letter: 'A' | 'B', bg: string) => {
       const wrap = document.createElement('div');
@@ -1978,17 +2001,34 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
       return wrap;
     };
 
+    const makeStopPin = (num: number, label: string) => {
+      const wrap = document.createElement('div');
+      wrap.title = `Stop ${num}: ${label}`;
+      wrap.style.cssText =
+        'width:24px;height:24px;border-radius:999px;background:#ffffff;color:#1a73e8;' +
+        'font-family:var(--font-mono);font-size:11px;font-weight:600;display:grid;place-items:center;' +
+        'border:2.5px solid #1a73e8;box-shadow:0 2px 7px rgba(32,33,36,0.3);';
+      wrap.textContent = String(num);
+      return wrap;
+    };
+
     if (originCoord) {
       originMarkerRef.current = new maplibregl.Marker({ element: makePin('A', '#1a73e8') })
         .setLngLat(originCoord)
         .addTo(map);
+    }
+    for (const wp of stopWaypoints) {
+      const marker = new maplibregl.Marker({ element: makeStopPin(wp.index, wp.label) })
+        .setLngLat(wp.coord)
+        .addTo(map);
+      stopMarkersRef.current.push(marker);
     }
     if (destCoord) {
       destMarkerRef.current = new maplibregl.Marker({ element: makePin('B', '#d93025') })
         .setLngLat(destCoord)
         .addTo(map);
     }
-  }, [routeGeoJson, originCoord, destCoord, mapReadySeq]);
+  }, [routeGeoJson, originCoord, destCoord, stopWaypoints, mapReadySeq]);
 
   // Respond to explicit 3D/2D pitch toggle
   useEffect(() => {
@@ -2101,7 +2141,11 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
       {pickTarget && (
         <div className="pick-hint">
           <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: 999, background: 'var(--primary)' }} />
-          {pickTarget === 'origin' ? 'Select a starting point' : 'Select a destination'}
+          {pickTarget === 'origin'
+            ? 'Select a starting point'
+            : pickTarget === 'destination'
+              ? 'Select a destination'
+              : 'Select a stop on the map'}
         </div>
       )}
     </div>

@@ -1,4 +1,24 @@
-export type RouteMode = 'walk' | 'bus' | 'drive';
+export type RouteMode = 'walk' | 'bike' | 'bus' | 'drive';
+
+export interface RouteStopSlot {
+  id: string;
+  item: SearchItem | null;
+}
+
+export type PickTarget = 'origin' | 'destination' | { stopId: string } | null;
+
+export interface RouteWaypoint {
+  index: number;
+  label: string;
+  coord: [number, number];
+}
+
+export interface ZoneTransitionEvent {
+  id: number;
+  type: 'enter' | 'leave' | 'cross';
+  leavingZone: FacultyProps | null;
+  enteringZone: FacultyProps | null;
+}
 
 export interface UserLocation {
   coord: [number, number];
@@ -122,9 +142,10 @@ export interface RouteStep {
   instruction: string;
   detail: string;
   distanceM: number;
-  kind: 'road' | 'footway' | 'shortcut' | 'steps' | 'indoor' | 'bus';
+  kind: 'road' | 'footway' | 'shortcut' | 'steps' | 'indoor' | 'bus' | 'waypoint';
   routeCode?: string;
   routeColor?: string;
+  waypointIndex?: number;
   coord: [number, number];
 }
 
@@ -144,6 +165,7 @@ export interface ComputedRoute {
   stepsCount: number;
   busRoutesUsed: string[];
   steps: RouteStep[];
+  waypoints?: RouteWaypoint[];
   originLabel: string;
   destLabel: string;
 }
@@ -159,3 +181,96 @@ export interface MapLayerVisibility {
   pois: boolean;
   labels: boolean;
 }
+
+export interface ElevationGridData {
+  source: string;
+  units: string;
+  scale: number;
+  minLon: number;
+  maxLon: number;
+  minLat: number;
+  maxLat: number;
+  cols: number;
+  rows: number;
+  minM: number;
+  maxM: number;
+  values: number[];
+}
+
+export interface ElevationProfilePoint {
+  distanceM: number;
+  elevationM: number;
+  gradePct: number;
+  coord: [number, number];
+}
+
+export interface RouteStepElevation {
+  startElevationM: number;
+  endElevationM: number;
+  deltaM: number;
+  gradePct: number;
+  hillTag: 'steep-climb' | 'steep-descent' | null;
+}
+
+export interface RouteElevationProfile {
+  totalGainM: number;
+  totalDropM: number;
+  minElevationM: number;
+  maxElevationM: number;
+  startElevationM: number;
+  endElevationM: number;
+  netChangeM: number;
+  totalDistanceM: number;
+  steepClimbCount: number;
+  steepDescentCount: number;
+  samples: ElevationProfilePoint[];
+  waypointOffsets: {
+    index: number;
+    label: string;
+    distanceM: number;
+    elevationM: number;
+  }[];
+  stepElevations: (RouteStepElevation | null)[];
+}
+
+export type HeatLevel = 'cool' | 'warm' | 'hot' | 'very-hot' | 'extreme';
+export type RainLevel = 'dry' | 'low' | 'possible' | 'likely' | 'raining';
+
+export interface WeatherForecastSlot {
+  hourLabel: string;
+  hour24: number;
+  tempC: number;
+  feelsLikeC: number;
+  rainChancePct: number;
+  precipitationMm: number;
+  uvIndex: number;
+  heatLevel: HeatLevel;
+  heatLabel: string;
+  rainLevel: RainLevel;
+}
+
+export interface CampusWeatherReport {
+  source: 'live' | 'estimate';
+  fetchedAt: number;
+  localTimeLabel: string;
+  localHour24: number;
+  isDay: boolean;
+  conditionLabel: string;
+  temperatureC: number;
+  feelsLikeC: number;
+  humidityPct: number;
+  cloudCoverPct: number;
+  windKmh: number;
+  uvIndex: number;
+  precipitationMm: number;
+  heatLevel: HeatLevel;
+  heatLabel: string;
+  heatAdvice: string;
+  rainChancePct: number;
+  rainLevel: RainLevel;
+  rainLabel: string;
+  rainAdvice: string;
+  routeAdvisory: string;
+  hourlyOutlook: WeatherForecastSlot[];
+}
+

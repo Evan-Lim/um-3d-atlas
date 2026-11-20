@@ -1,5 +1,5 @@
 import { CampusRouter, distMeters } from '../routing/pathfinder';
-import type { ComputedRoute, RouteMode, SearchItem, TransitRoute } from '../types/map';
+import type { ComputedRoute, FacultyProps, RouteMode, SearchItem, TransitRoute } from '../types/map';
 
 export interface NearbyTransitStop {
   name: string;
@@ -20,6 +20,7 @@ export interface NearbyTransitStop {
 
 export interface ModeComparison {
   walk: ComputedRoute | null;
+  bike: ComputedRoute | null;
   bus: ComputedRoute | null;
   drive: ComputedRoute | null;
 }
@@ -28,6 +29,12 @@ export interface WalkHealthMetrics {
   stepsEstimate: number;
   kcalEstimate: number;
   coveredRatio: number;
+}
+
+export interface BikeRouteMetrics {
+  kcalEstimate: number;
+  roadRatio: number;
+  pavedPathRatio: number;
 }
 
 /**
@@ -84,24 +91,26 @@ export function findNearbyStops(
 }
 
 /**
- * Computes routes across all 3 travel modes (walk, bus, drive) for instant M3 tab comparison.
+ * Computes routes across all 4 travel modes (walk, bike, bus, drive) for instant tab comparison.
  */
 export function compareAllModes(
   router: CampusRouter | null,
   origin: SearchItem | null,
   dest: SearchItem | null,
   stepFree: boolean,
+  stops: SearchItem[] = [],
 ): ModeComparison {
   if (!router || !origin || !dest) {
-    return { walk: null, bus: null, drive: null };
+    return { walk: null, bike: null, bus: null, drive: null };
   }
-  if (origin.id === dest.id && origin.kind === dest.kind) {
-    return { walk: null, bus: null, drive: null };
+  if (stops.length === 0 && origin.id === dest.id && origin.kind === dest.kind) {
+    return { walk: null, bike: null, bus: null, drive: null };
   }
   return {
-    walk: router.computeRoute(origin, dest, 'walk', { stepFree }),
-    bus: router.computeRoute(origin, dest, 'bus', { stepFree }),
-    drive: router.computeRoute(origin, dest, 'drive', { stepFree: false }),
+    walk: router.computeMultiStopRoute(origin, stops, dest, 'walk', { stepFree }),
+    bike: router.computeMultiStopRoute(origin, stops, dest, 'bike', { stepFree: true }),
+    bus: router.computeMultiStopRoute(origin, stops, dest, 'bus', { stepFree }),
+    drive: router.computeMultiStopRoute(origin, stops, dest, 'drive', { stepFree: false }),
   };
 }
 
@@ -126,6 +135,28 @@ export function computeWalkMetrics(route: ComputedRoute | null): WalkHealthMetri
 }
 
 /**
+ * Calculates cycling active burn and road vs paved path split.
+ */
+export function computeBikeMetrics(route: ComputedRoute | null): BikeRouteMetrics {
+  if (!route || route.totalDistanceM <= 0) {
+    return { kcalEstimate: 0, roadRatio: 0, pavedPathRatio: 0 };
+  }
+  const kcalEstimate = Math.max(1, Math.round(route.totalDistanceM * 0.028));
+  let roadM = 0;
+  let pathM = 0;
+  for (const step of route.steps) {
+    if (step.kind === 'road') roadM += step.distanceM;
+    else if (step.kind === 'footway' || step.kind === 'shortcut') pathM += step.distanceM;
+  }
+  const denom = Math.max(1, roadM + pathM);
+  return {
+    kcalEstimate,
+    roadRatio: Math.min(1, Math.max(0, roadM / denom)),
+    pavedPathRatio: Math.min(1, Math.max(0, pathM / denom)),
+  };
+}
+
+/**
  * Pure helper to toggle a place key (`kind:id`) in a saved list.
  */
 export function toggleSavedPlace(currentIds: string[], itemKey: string): string[] {
@@ -147,6 +178,7 @@ export interface ParsedAtlasParams {
   placeKey: string | null;
   fromKey: string | null;
   toKey: string | null;
+  stopKeys: string[];
   mode: RouteMode | null;
 }
 
@@ -158,10 +190,19 @@ export function parseAtlasUrlParams(search: string): ParsedAtlasParams {
   const placeKey = params.get('place');
   const fromKey = params.get('from');
   const toKey = params.get('to');
+  const rawStops = params.get('stops');
+  const stopKeys = rawStops
+    ? rawStops
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : [];
   const rawMode = params.get('mode');
   const mode: RouteMode | null =
-    rawMode === 'walk' || rawMode === 'bus' || rawMode === 'drive' ? rawMode : null;
-  return { placeKey, fromKey, toKey, mode };
+    rawMode === 'walk' || rawMode === 'bike' || rawMode === 'bus' || rawMode === 'drive'
+      ? rawMode
+      : null;
+  return { placeKey, fromKey, toKey, stopKeys, mode };
 }
 
 /**
@@ -173,6 +214,7 @@ export function buildAtlasShareUrl(
     placeKey?: string | null;
     fromKey?: string | null;
     toKey?: string | null;
+    stopKeys?: string[];
     mode?: RouteMode;
   },
 ): string {
@@ -180,6 +222,9 @@ export function buildAtlasShareUrl(
   url.search = '';
   if (opts.fromKey && opts.toKey) {
     url.searchParams.set('from', opts.fromKey);
+    if (opts.stopKeys && opts.stopKeys.length > 0) {
+      url.searchParams.set('stops', opts.stopKeys.join(','));
+    }
     url.searchParams.set('to', opts.toKey);
     if (opts.mode) url.searchParams.set('mode', opts.mode);
   } else if (opts.placeKey) {
@@ -510,5 +555,315 @@ export function buildRecommendedPlaces(
 
   return { isNearby: false, items: fallback.slice(0, limit) };
 }
+
+/* ------------------------------------------------------------------
+   Multi-Stop Route Order Optimizer (Fixed Origin & Destination)
+   ------------------------------------------------------------------ */
+
+export interface StopOptimizationResult {
+  orderedStops: SearchItem[];
+  originalDistanceM: number;
+  optimizedDistanceM: number;
+  savedDistanceM: number;
+  changed: boolean;
+}
+
+/**
+ * Reorders intermediate stops to minimize total distance from `origin` -> stops -> `dest`,
+ * keeping `origin` fixed at start and `dest` fixed at end.
+ * - Uses exact Held-Karp DP for <= 10 stops (provably optimal).
+ * - Uses Nearest-Neighbor + 2-opt local refinement for 11+ stops (fast & scalable for unlimited stops).
+ */
+export function optimizeStopOrder(
+  origin: SearchItem,
+  stops: SearchItem[],
+  dest: SearchItem,
+  distanceFn?: (a: SearchItem, b: SearchItem) => number,
+): StopOptimizationResult {
+  const measure = distanceFn ?? ((a: SearchItem, b: SearchItem) => distMeters(a.center, b.center));
+  const n = stops.length;
+
+  const evalChain = (order: number[], mat: number[][], endIdx: number): number => {
+    let total = 0;
+    let prev = 0;
+    for (let i = 0; i < order.length; i++) {
+      const cur = order[i] + 1;
+      total += mat[prev][cur];
+      prev = cur;
+    }
+    total += mat[prev][endIdx];
+    return total;
+  };
+
+  if (n <= 1) {
+    const d =
+      n === 0
+        ? Math.round(measure(origin, dest))
+        : Math.round(measure(origin, stops[0]) + measure(stops[0], dest));
+    return {
+      orderedStops: stops.slice(),
+      originalDistanceM: d,
+      optimizedDistanceM: d,
+      savedDistanceM: 0,
+      changed: false,
+    };
+  }
+
+  // Build symmetric distance matrix for [origin, ...stops, dest]
+  const pts: SearchItem[] = [origin, ...stops, dest];
+  const m = pts.length;
+  const endIdx = m - 1;
+  const mat: number[][] = Array.from({ length: m }, () => new Array<number>(m).fill(0));
+  for (let i = 0; i < m; i++) {
+    for (let j = i + 1; j < m; j++) {
+      const d = measure(pts[i], pts[j]);
+      mat[i][j] = d;
+      mat[j][i] = d;
+    }
+  }
+
+  const origOrder = Array.from({ length: n }, (_, i) => i);
+  const origDist = evalChain(origOrder, mat, endIdx);
+
+  let bestOrder: number[];
+
+  if (n <= 10) {
+    // Exact Held-Karp DP: dp[mask * n + last] = min dist from origin visiting `mask` ending at stop `last`
+    const totalMasks = 1 << n;
+    const dp = new Float64Array(totalMasks * n).fill(Infinity);
+    const parent = new Int8Array(totalMasks * n).fill(-1);
+
+    for (let i = 0; i < n; i++) {
+      dp[(1 << i) * n + i] = mat[0][i + 1];
+    }
+
+    for (let mask = 1; mask < totalMasks; mask++) {
+      for (let last = 0; last < n; last++) {
+        if (!(mask & (1 << last))) continue;
+        const curCost = dp[mask * n + last];
+        if (!Number.isFinite(curCost)) continue;
+        for (let next = 0; next < n; next++) {
+          if (mask & (1 << next)) continue;
+          const nextMask = mask | (1 << next);
+          const nextCost = curCost + mat[last + 1][next + 1];
+          const idx = nextMask * n + next;
+          if (nextCost < dp[idx]) {
+            dp[idx] = nextCost;
+            parent[idx] = last;
+          }
+        }
+      }
+    }
+
+    const fullMask = totalMasks - 1;
+    let bestLast = 0;
+    let bestTotal = Infinity;
+    for (let last = 0; last < n; last++) {
+      const tot = dp[fullMask * n + last] + mat[last + 1][endIdx];
+      if (tot < bestTotal) {
+        bestTotal = tot;
+        bestLast = last;
+      }
+    }
+
+    bestOrder = new Array<number>(n);
+    let mask = fullMask;
+    let cur = bestLast;
+    for (let pos = n - 1; pos >= 0; pos--) {
+      bestOrder[pos] = cur;
+      const p = parent[mask * n + cur];
+      mask ^= 1 << cur;
+      cur = p;
+    }
+  } else {
+    // Scalable Nearest-Neighbor seed + 2-opt refinement for 11+ stops
+    const visited = new Uint8Array(n);
+    bestOrder = [];
+    let currentNode = 0;
+    for (let step = 0; step < n; step++) {
+      let nearest = -1;
+      let nearestD = Infinity;
+      for (let i = 0; i < n; i++) {
+        if (visited[i]) continue;
+        const d = mat[currentNode][i + 1];
+        if (d < nearestD) {
+          nearestD = d;
+          nearest = i;
+        }
+      }
+      if (nearest === -1) break;
+      visited[nearest] = 1;
+      bestOrder.push(nearest);
+      currentNode = nearest + 1;
+    }
+
+    // 2-opt local search (open path with fixed endpoints 0 and endIdx)
+    let improved = true;
+    let guard = 0;
+    while (improved && guard < 200) {
+      improved = false;
+      guard += 1;
+      for (let i = 0; i < n - 1; i++) {
+        const beforeI = i === 0 ? 0 : bestOrder[i - 1] + 1;
+        const nodeI = bestOrder[i] + 1;
+        for (let k = i + 1; k < n; k++) {
+          const nodeK = bestOrder[k] + 1;
+          const afterK = k === n - 1 ? endIdx : bestOrder[k + 1] + 1;
+          const oldCost = mat[beforeI][nodeI] + mat[nodeK][afterK];
+          const newCost = mat[beforeI][nodeK] + mat[nodeI][afterK];
+          if (newCost + 1e-6 < oldCost) {
+            // Reverse segment [i..k]
+            let l = i;
+            let r = k;
+            while (l < r) {
+              const tmp = bestOrder[l];
+              bestOrder[l] = bestOrder[r];
+              bestOrder[r] = tmp;
+              l += 1;
+              r -= 1;
+            }
+            improved = true;
+          }
+        }
+      }
+    }
+  }
+
+  const optDist = evalChain(bestOrder, mat, endIdx);
+  const isActuallyShorter = optDist + 1 < origDist;
+  const finalOrder = isActuallyShorter ? bestOrder : origOrder;
+  const orderChanged = finalOrder.some((idx, pos) => idx !== pos);
+  const originalDistanceM = Math.round(origDist);
+  const optimizedDistanceM = Math.round(isActuallyShorter ? optDist : origDist);
+
+  return {
+    orderedStops: finalOrder.map((idx) => stops[idx]),
+    originalDistanceM,
+    optimizedDistanceM,
+    savedDistanceM: Math.max(0, originalDistanceM - optimizedDistanceM),
+    changed: orderChanged && isActuallyShorter,
+  };
+}
+
+/* ------------------------------------------------------------------
+   Campus Zone Point-in-Polygon Spatial Index & Transition Detector
+   ------------------------------------------------------------------ */
+
+export interface ZoneSpatialEntry {
+  zone: FacultyProps;
+  bbox: [number, number, number, number];
+  bboxArea: number;
+  polygons: [number, number][][][];
+}
+
+function pointInRing(pt: [number, number], ring: [number, number][]): boolean {
+  const [x, y] = pt;
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0];
+    const yi = ring[i][1];
+    const xj = ring[j][0];
+    const yj = ring[j][1];
+    const intersects = yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi + 1e-15) + xi;
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+
+function pointInPolygonRings(pt: [number, number], rings: [number, number][][]): boolean {
+  if (rings.length === 0 || !pointInRing(pt, rings[0])) return false;
+  for (let h = 1; h < rings.length; h++) {
+    if (pointInRing(pt, rings[h])) return false;
+  }
+  return true;
+}
+
+/**
+ * Builds a fast bounding-box-indexed lookup table for all UM campus zones
+ * (faculties, colleges, research institutes, medical centres, and landmarks).
+ * Sorted by smallest bbox area first so nested standalone landmarks take priority.
+ */
+export function buildZoneSpatialIndex(facultiesGeo: GeoJSON.FeatureCollection): ZoneSpatialEntry[] {
+  const entries: ZoneSpatialEntry[] = [];
+
+  for (const ft of facultiesGeo.features) {
+    if (!ft.geometry || !ft.properties) continue;
+    let polygons: [number, number][][][] = [];
+    if (ft.geometry.type === 'Polygon') {
+      polygons = [ft.geometry.coordinates as [number, number][][]];
+    } else if (ft.geometry.type === 'MultiPolygon') {
+      polygons = ft.geometry.coordinates as [number, number][][][];
+    } else {
+      continue;
+    }
+
+    let minLng = Infinity;
+    let minLat = Infinity;
+    let maxLng = -Infinity;
+    let maxLat = -Infinity;
+    for (const poly of polygons) {
+      for (const ring of poly) {
+        for (const [lng, lat] of ring) {
+          if (lng < minLng) minLng = lng;
+          if (lat < minLat) minLat = lat;
+          if (lng > maxLng) maxLng = lng;
+          if (lat > maxLat) maxLat = lat;
+        }
+      }
+    }
+    if (!Number.isFinite(minLng)) continue;
+    const bboxArea = Math.max(0, (maxLng - minLng) * (maxLat - minLat));
+    entries.push({
+      zone: ft.properties as FacultyProps,
+      bbox: [minLng, minLat, maxLng, maxLat],
+      bboxArea,
+      polygons,
+    });
+  }
+
+  entries.sort((a, b) => a.bboxArea - b.bboxArea);
+  return entries;
+}
+
+/**
+ * Returns the campus zone containing `coord`, or `null` when in an unzoned corridor/road.
+ */
+export function findZoneAtCoord(
+  coord: [number, number] | null,
+  index: ZoneSpatialEntry[],
+): FacultyProps | null {
+  if (!coord || index.length === 0) return null;
+  const [lng, lat] = coord;
+  for (const entry of index) {
+    const [minLng, minLat, maxLng, maxLat] = entry.bbox;
+    if (lng < minLng || lng > maxLng || lat < minLat || lat > maxLat) continue;
+    for (const rings of entry.polygons) {
+      if (pointInPolygonRings(coord, rings)) {
+        return entry.zone;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Classifies a zone crossing between two consecutive navigation positions.
+ */
+export function resolveZoneTransition(
+  prevZone: FacultyProps | null,
+  nextZone: FacultyProps | null,
+): { type: 'enter' | 'leave' | 'cross'; leavingZone: FacultyProps | null; enteringZone: FacultyProps | null } | null {
+  const prevId = prevZone?.id ?? null;
+  const nextId = nextZone?.id ?? null;
+  if (prevId === nextId) return null;
+  if (!prevZone && nextZone) {
+    return { type: 'enter', leavingZone: null, enteringZone: nextZone };
+  }
+  if (prevZone && !nextZone) {
+    return { type: 'leave', leavingZone: prevZone, enteringZone: null };
+  }
+  return { type: 'cross', leavingZone: prevZone, enteringZone: nextZone };
+}
+
 
 

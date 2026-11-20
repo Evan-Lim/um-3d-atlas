@@ -26,6 +26,7 @@ export type IconName =
   | 'pause'
   | 'play'
   | 'walk'
+  | 'bike'
   | 'car'
   | 'accessible'
   | 'external'
@@ -42,7 +43,19 @@ export type IconName =
   | 'sun'
   | 'moon'
   | 'clock'
-  | 'compass';
+  | 'compass'
+  | 'plus'
+  | 'arrowDown'
+  | 'grip'
+  | 'optimize'
+  | 'flag'
+  | 'mountain'
+  | 'cloudRain'
+  | 'cloudSun'
+  | 'thermometer'
+  | 'droplet'
+  | 'trendUp'
+  | 'trendDown';
 
 const PATHS: Record<IconName, ReactNode> = {
   search: (
@@ -153,6 +166,13 @@ const PATHS: Record<IconName, ReactNode> = {
       <path d="M12.6 16l3 3.6M10 13.5l-2.6 3" />
     </>
   ),
+  bike: (
+    <>
+      <circle cx="5.8" cy="17" r="3.4" />
+      <circle cx="18.2" cy="17" r="3.4" />
+      <path d="M5.8 17 10.2 10.2h5.2l2.8 6.8M10.2 10.2 12 17M8.8 7.5h3.2M14.5 7.2h2.2l1.5 3" />
+    </>
+  ),
   car: (
     <>
       <path d="M4.5 16.5 6 10.8A2.2 2.2 0 0 1 8.1 9.2h7.8a2.2 2.2 0 0 1 2.1 1.6l1.5 5.7" />
@@ -257,6 +277,71 @@ const PATHS: Record<IconName, ReactNode> = {
     <>
       <circle cx="12" cy="12" r="9" />
       <polygon points="15.8,8.2 13.4,13.4 8.2,15.8 10.6,10.6" />
+    </>
+  ),
+  plus: <path d="M12 5v14M5 12h14" />,
+  arrowDown: <path d="M12 4v16M6 14l6 6 6-6" />,
+  grip: (
+    <>
+      <circle cx="9" cy="6.5" r="1.1" fill="currentColor" stroke="none" />
+      <circle cx="15" cy="6.5" r="1.1" fill="currentColor" stroke="none" />
+      <circle cx="9" cy="12" r="1.1" fill="currentColor" stroke="none" />
+      <circle cx="15" cy="12" r="1.1" fill="currentColor" stroke="none" />
+      <circle cx="9" cy="17.5" r="1.1" fill="currentColor" stroke="none" />
+      <circle cx="15" cy="17.5" r="1.1" fill="currentColor" stroke="none" />
+    </>
+  ),
+  optimize: (
+    <>
+      <circle cx="5.5" cy="6" r="2" />
+      <circle cx="18.5" cy="18" r="2" />
+      <path d="M7.5 6h5.5a3 3 0 0 1 0 6H11a3 3 0 0 0 0 6h5.5" />
+      <path d="m14.2 15.6 2.3 2.4-2.3 2.4" />
+    </>
+  ),
+  flag: (
+    <>
+      <path d="M5.5 21V4.5" />
+      <path d="M5.5 5.2h11.2l-2.2 4.2 2.2 4.2H5.5" />
+    </>
+  ),
+  mountain: (
+    <>
+      <path d="m3 19 6.2-10.5L13.5 15l2.7-4L21 19H3Z" />
+    </>
+  ),
+  cloudRain: (
+    <>
+      <path d="M6.8 14.5H17.5a3.5 3.5 0 0 0 .5-6.95A5.3 5.3 0 0 0 7.7 6.3 3.9 3.9 0 0 0 6.8 14.5Z" />
+      <path d="M8.5 17.5 7.5 20.5M12.5 17.5 11.5 20.5M16.5 17.5 15.5 20.5" />
+    </>
+  ),
+  cloudSun: (
+    <>
+      <path d="M12 3v1.6M17.3 5.2l-1.1 1.1M20 10.5h-1.6M6.7 5.2l1.1 1.1" />
+      <path d="M15.2 10.5a3.2 3.2 0 0 0-5.8-1.8" />
+      <path d="M6.5 18.5h10.2a3.1 3.1 0 0 0 .4-6.15 4.6 4.6 0 0 0-8.8-1.1A3.4 3.4 0 0 0 6.5 18.5Z" />
+    </>
+  ),
+  thermometer: (
+    <>
+      <path d="M14 14.8V5.5a2 2 0 1 0-4 0v9.3a3.5 3.5 0 1 0 4 0Z" />
+      <path d="M12 10v6" />
+    </>
+  ),
+  droplet: (
+    <path d="M12 3.5s6 6.7 6 10.7a6 6 0 1 1-12 0c0-4 6-10.7 6-10.7Z" />
+  ),
+  trendUp: (
+    <>
+      <path d="M4 17 10 11l4 4 6-7" />
+      <path d="M15.5 8H20v4.5" />
+    </>
+  ),
+  trendDown: (
+    <>
+      <path d="M4 7 10 13l4-4 6 7" />
+      <path d="M15.5 16H20v-4.5" />
     </>
   ),
 };

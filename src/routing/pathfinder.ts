@@ -3,6 +3,7 @@ import type {
   GraphData,
   RouteMode,
   RouteStep,
+  RouteWaypoint,
   SearchItem,
   TransitData,
   TransitRoute,
@@ -107,6 +108,7 @@ export class CampusRouter {
   private nodes: [number, number][];
   private adj: AdjEdge[][];
   private drivableNodes: Set<number>;
+  private bikeableNodes: Set<number>;
   private accessibleNodes: Set<number>;
   private transitRoutes: TransitRoute[] = [];
   private routePolylines = new Map<string, [number, number][]>();
@@ -115,6 +117,7 @@ export class CampusRouter {
     this.nodes = graph.nodes;
     this.adj = Array.from({ length: graph.nodes.length }, () => []);
     this.drivableNodes = new Set();
+    this.bikeableNodes = new Set();
     this.accessibleNodes = new Set();
 
     for (const [u, v, dist, kind, flags, name] of graph.edges) {
@@ -123,6 +126,10 @@ export class CampusRouter {
       if (flags & 1) {
         this.drivableNodes.add(u);
         this.drivableNodes.add(v);
+      }
+      if (kind !== 3 && ((flags & 1) || (flags & 2))) {
+        this.bikeableNodes.add(u);
+        this.bikeableNodes.add(v);
       }
       if (kind !== 3 && flags & 2) {
         this.accessibleNodes.add(u);
@@ -145,7 +152,15 @@ export class CampusRouter {
     let bestIdx = 0;
     let bestD = Infinity;
     const filterSet =
-      mode === 'drive' ? this.drivableNodes : stepFree ? this.accessibleNodes : null;
+      mode === 'drive'
+        ? this.drivableNodes
+        : mode === 'bike'
+          ? this.bikeableNodes.size > 0
+            ? this.bikeableNodes
+            : null
+          : stepFree
+            ? this.accessibleNodes
+            : null;
 
     for (let i = 0; i < this.nodes.length; i++) {
       if (filterSet && !filterSet.has(i)) continue;
@@ -158,9 +173,16 @@ export class CampusRouter {
     return bestIdx;
   }
 
-  private edgeWeight(edge: AdjEdge, mode: 'walk' | 'drive', stepFree: boolean): number {
+  private edgeWeight(edge: AdjEdge, mode: 'walk' | 'bike' | 'drive', stepFree: boolean): number {
     if (mode === 'drive') {
       return edge.flags & 1 ? edge.dist : Infinity;
+    }
+    if (mode === 'bike') {
+      // Strictly avoid stairs; prefer campus roads and paved paths
+      if (edge.kind === 3 || !((edge.flags & 1) || (edge.flags & 2))) return Infinity;
+      if (edge.kind === 0) return edge.dist * 0.92;
+      if (edge.kind === 1) return edge.dist * 1.0;
+      return edge.dist * 1.08;
     }
     if (stepFree) {
       if (edge.kind === 3 || !(edge.flags & 2)) return Infinity;
@@ -177,7 +199,7 @@ export class CampusRouter {
   private runAStar(
     startIdx: number,
     goalIdx: number,
-    mode: 'walk' | 'drive',
+    mode: 'walk' | 'bike' | 'drive',
     stepFree: boolean,
   ): { nodeSeq: number[]; edgeSeq: AdjEdge[] } | null {
     const n = this.nodes.length;
@@ -186,7 +208,7 @@ export class CampusRouter {
     const parentEdge: (AdjEdge | null)[] = new Array(n).fill(null);
     const closed = new Uint8Array(n);
 
-    const hScale = mode === 'drive' ? 1.0 : stepFree ? 0.88 : 0.82;
+    const hScale = mode === 'drive' ? 1.0 : mode === 'bike' ? 0.9 : stepFree ? 0.88 : 0.82;
     const goalCoord = this.nodes[goalIdx];
 
     gScore[startIdx] = 0;
@@ -235,7 +257,11 @@ export class CampusRouter {
     return { nodeSeq, edgeSeq };
   }
 
-  private buildWalkLegs(nodeSeq: number[], edgeSeq: AdjEdge[]) {
+  private buildWalkLegs(
+    nodeSeq: number[],
+    edgeSeq: AdjEdge[],
+    mode: 'walk' | 'bike' | 'drive' = 'walk',
+  ) {
     const coordinates: [number, number][] = nodeSeq.map((idx) => this.nodes[idx]);
     const segments: ComputedRoute['segments'] = [];
     let totalDistanceM = 0;
@@ -281,7 +307,7 @@ export class CampusRouter {
       let action = '';
       if (i === 0) {
         const dir = compassDirection(leg.coords[0], leg.coords[leg.coords.length - 1]);
-        action = `Head ${dir} on ${leg.name}`;
+        action = mode === 'bike' ? `Cycle ${dir} on ${leg.name}` : `Head ${dir} on ${leg.name}`;
       } else {
         const prev = legs[i - 1];
         const verb = turnVerb(
@@ -290,23 +316,33 @@ export class CampusRouter {
           leg.coords[Math.min(1, leg.coords.length - 1)],
         );
         if (leg.kind === 'shortcut') {
-          action = `${verb} onto shortcut (${leg.name})`;
+          action = `${verb} onto ${mode === 'bike' ? 'paved connector' : 'shortcut'} (${leg.name})`;
         } else if (leg.kind === 'steps') {
           action = `${verb} via stairway`;
         } else {
           action = `${verb} onto ${leg.name}`;
         }
       }
-      steps.push({
-        instruction: action,
-        detail:
-          leg.kind === 'shortcut'
+      const detail =
+        mode === 'bike'
+          ? leg.kind === 'road'
+            ? 'Campus road · cycling'
+            : leg.kind === 'shortcut'
+              ? 'Covered connector · watch for pedestrians'
+              : 'Paved campus path'
+          : leg.kind === 'shortcut'
             ? 'Covered walkway / pedestrian shortcut'
             : leg.kind === 'steps'
               ? 'Outdoor campus steps'
               : leg.kind === 'road'
-                ? 'Roadside'
-                : 'Campus footpath',
+                ? mode === 'drive'
+                  ? 'Campus road'
+                  : 'Roadside'
+                : 'Campus footpath';
+
+      steps.push({
+        instruction: action,
+        detail,
         distanceM: Math.round(leg.dist),
         kind: leg.kind,
         coord: leg.coords[0],
@@ -678,7 +714,7 @@ export class CampusRouter {
   private computeWalkOrDrive(
     origin: SearchItem,
     dest: SearchItem,
-    mode: 'walk' | 'drive',
+    mode: 'walk' | 'bike' | 'drive',
     stepFree: boolean,
   ): ComputedRoute | null {
     const startIdx =
@@ -692,13 +728,19 @@ export class CampusRouter {
 
     const res = this.runAStar(startIdx, goalIdx, mode, stepFree);
     if (!res) {
+      if (mode === 'bike') {
+        const accessibleFallback = this.computeWalkOrDrive(origin, dest, 'walk', true);
+        if (accessibleFallback) return { ...accessibleFallback, mode: 'bike', stepFreeUsed: true };
+        const walkFallback = this.computeWalkOrDrive(origin, dest, 'walk', false);
+        return walkFallback ? { ...walkFallback, mode: 'bike' } : null;
+      }
       if (mode === 'drive' || stepFree) {
         return this.computeWalkOrDrive(origin, dest, 'walk', false);
       }
       return null;
     }
 
-    const built = this.buildWalkLegs(res.nodeSeq, res.edgeSeq);
+    const built = this.buildWalkLegs(res.nodeSeq, res.edgeSeq, mode);
     const connector = this.connectPointEnds(origin, dest, built.coordinates, built.segments);
     built.totalDistanceM += connector.startM + connector.endM;
     const steps: RouteStep[] = [];
@@ -717,7 +759,7 @@ export class CampusRouter {
     if (connector.startM > 3) {
       steps.push({
         instruction: `Start from ${origin.title}`,
-        detail: 'Head to the nearest campus path',
+        detail: mode === 'bike' ? 'Join the nearest campus road or paved path' : 'Head to the nearest campus path',
         distanceM: Math.round(connector.startM),
         kind: 'footway',
         coord: origin.center,
@@ -732,6 +774,15 @@ export class CampusRouter {
       steps.push({
         instruction: `Park nearby and walk ${Math.round(finalGap)} m to entrance`,
         detail: 'Destination is inside pedestrian campus zone',
+        distanceM: Math.round(finalGap),
+        kind: 'footway',
+        coord: dest.center,
+      });
+      totalDistanceM += finalGap;
+    } else if (mode === 'bike' && finalGap > 30) {
+      steps.push({
+        instruction: `Park bicycle and walk ${Math.round(finalGap)} m to entrance`,
+        detail: 'Final approach to building entrance',
         distanceM: Math.round(finalGap),
         kind: 'footway',
         coord: dest.center,
@@ -761,12 +812,12 @@ export class CampusRouter {
       coord: dest.center,
     });
 
-    const speedMpm = mode === 'drive' ? 420 : stepFree ? 68 : 80;
+    const speedMpm = mode === 'drive' ? 420 : mode === 'bike' ? 240 : stepFree ? 68 : 80;
     const estimatedMinutes = Math.max(1, Math.round(totalDistanceM / speedMpm));
 
     return {
       mode,
-      stepFreeUsed: mode === 'walk' && stepFree,
+      stepFreeUsed: mode === 'bike' || (mode === 'walk' && stepFree),
       coordinates: built.coordinates,
       segments: built.segments,
       totalDistanceM: Math.round(totalDistanceM),
@@ -791,5 +842,154 @@ export class CampusRouter {
       return this.computeBusRoute(origin, dest, stepFree);
     }
     return this.computeWalkOrDrive(origin, dest, mode, stepFree);
+  }
+
+  /**
+   * Measures graph distance in meters between two points for the given mode.
+   * Falls back to Euclidean distance when disconnected.
+   */
+  measureDistance(
+    origin: SearchItem,
+    dest: SearchItem,
+    mode: RouteMode,
+    stepFree = false,
+  ): number {
+    if (origin.id === dest.id && origin.kind === dest.kind) return 0;
+    const pathMode: 'walk' | 'bike' | 'drive' = mode === 'bus' ? 'walk' : mode;
+    const startIdx =
+      pathMode === 'walk' && !stepFree && origin.entrance_node >= 0 && origin.entrance_node < this.nodes.length
+        ? origin.entrance_node
+        : this.findNearestNode(origin.center, pathMode, stepFree);
+    const goalIdx =
+      pathMode === 'walk' && !stepFree && dest.entrance_node >= 0 && dest.entrance_node < this.nodes.length
+        ? dest.entrance_node
+        : this.findNearestNode(dest.center, pathMode, stepFree);
+    const res = this.runAStar(startIdx, goalIdx, pathMode, stepFree);
+    if (!res) return distMeters(origin.center, dest.center);
+    let dist = 0;
+    for (const e of res.edgeSeq) dist += e.dist;
+    return dist;
+  }
+
+  /**
+   * Chains route computation cleanly across Origin -> Stop 1 -> ... -> Stop N -> Destination.
+   */
+  computeMultiStopRoute(
+    origin: SearchItem,
+    stops: SearchItem[],
+    dest: SearchItem,
+    mode: RouteMode,
+    options?: { stepFree?: boolean },
+  ): ComputedRoute | null {
+    if (stops.length === 0) {
+      return this.computeRoute(origin, dest, mode, options);
+    }
+
+    const chain: SearchItem[] = [origin, ...stops, dest];
+    const waypoints: RouteWaypoint[] = stops.map((s, idx) => ({
+      index: idx + 1,
+      label: s.title,
+      coord: s.center,
+    }));
+
+    const coordinates: [number, number][] = [];
+    const segments: ComputedRoute['segments'] = [];
+    const steps: RouteStep[] = [];
+    const busRoutesUsed: string[] = [];
+    let totalDistanceM = 0;
+    let estimatedMinutes = 0;
+    let shortcutCount = 0;
+    let stepsCount = 0;
+    let stepFreeUsed = true;
+
+    for (let i = 0; i < chain.length - 1; i++) {
+      const from = chain[i];
+      const to = chain[i + 1];
+      const isLastLeg = i === chain.length - 2;
+
+      // Skip zero-length duplicate consecutive waypoint cleanly while recording waypoint arrival
+      if (from.id === to.id && from.kind === to.kind) {
+        if (!isLastLeg) {
+          steps.push({
+            instruction: `Stop ${i + 1}: ${to.title}`,
+            detail: to.subtitle || 'Intermediate stop',
+            distanceM: 0,
+            kind: 'waypoint',
+            waypointIndex: i + 1,
+            coord: to.center,
+          });
+        }
+        continue;
+      }
+
+      const leg = this.computeRoute(from, to, mode, options);
+      if (!leg) return null;
+
+      // Append coordinates, avoiding exact duplicate vertex at leg join
+      for (let c = 0; c < leg.coordinates.length; c++) {
+        const pt = leg.coordinates[c];
+        if (
+          c === 0 &&
+          coordinates.length > 0 &&
+          distMeters(coordinates[coordinates.length - 1], pt) < 0.5
+        ) {
+          continue;
+        }
+        coordinates.push(pt);
+      }
+
+      segments.push(...leg.segments);
+      totalDistanceM += leg.totalDistanceM;
+      estimatedMinutes += leg.estimatedMinutes;
+      shortcutCount += leg.shortcutCount;
+      stepsCount += leg.stepsCount;
+      stepFreeUsed = stepFreeUsed && leg.stepFreeUsed;
+
+      for (const code of leg.busRoutesUsed) {
+        if (!busRoutesUsed.includes(code)) busRoutesUsed.push(code);
+      }
+
+      if (!isLastLeg) {
+        // Replace final "Arrive at ..." step with a clear numbered waypoint step
+        const legSteps = leg.steps.slice();
+        if (
+          legSteps.length > 0 &&
+          legSteps[legSteps.length - 1].instruction.startsWith('Arrive at ')
+        ) {
+          legSteps.pop();
+        }
+        steps.push(...legSteps);
+        steps.push({
+          instruction: `Stop ${i + 1}: ${to.title}`,
+          detail: to.subtitle || 'Intermediate stop',
+          distanceM: 0,
+          kind: 'waypoint',
+          waypointIndex: i + 1,
+          coord: to.center,
+        });
+      } else {
+        steps.push(...leg.steps);
+      }
+    }
+
+    if (coordinates.length < 2) {
+      return null;
+    }
+
+    return {
+      mode,
+      stepFreeUsed,
+      coordinates,
+      segments,
+      totalDistanceM: Math.round(totalDistanceM),
+      estimatedMinutes: Math.max(1, Math.round(estimatedMinutes)),
+      shortcutCount,
+      stepsCount,
+      busRoutesUsed,
+      steps,
+      waypoints,
+      originLabel: origin.title,
+      destLabel: dest.title,
+    };
   }
 }

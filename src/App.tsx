@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from './components/Icon';
+import { CampusConditionsBar } from './components/CampusConditionsBar';
 import { DirectionsPanel } from './components/DirectionsPanel';
 import { FloorControls } from './components/FloorControls';
 import { InspectorPanel } from './components/InspectorPanel';
@@ -14,30 +15,49 @@ import { type CameraCommand, UmMapCanvas, type UmContextBundle } from './compone
 import { CampusRouter, distMeters } from './routing/pathfinder';
 import { applyZonePalette, zoneKindLabel } from './theme';
 import {
+  computeRemainingElevation,
+  computeRouteElevationProfile,
+  sampleElevation,
+} from './utils/elevationUtils';
+import {
+  buildDiurnalFallbackWeather,
+  fetchCampusWeather,
+} from './utils/weatherUtils';
+import {
   type ActivePanel,
   type RecommendedPlace,
   buildAtlasShareUrl,
   buildRecommendedPlaces,
+  buildZoneSpatialIndex,
   compareAllModes,
+  findZoneAtCoord,
+  optimizeStopOrder,
   parseAtlasUrlParams,
   persistDarkMode,
   pushRecentPlace,
   readPersistedDarkMode,
   resolvePanelToggle,
+  resolveZoneTransition,
   toggleSavedPlace,
 } from './utils/atlasUtils';
 import type {
   BuildingProps,
+  CampusWeatherReport,
   ComputedRoute,
+  ElevationGridData,
   FacultyProps,
   GraphData,
   MapLayerVisibility,
+  PickTarget,
   RoomProps,
   RouteMode,
   RouteStep,
+  RouteStopSlot,
+  RouteWaypoint,
   SearchItem,
   TransitData,
   UserLocation,
+  ZoneTransitionEvent,
 } from './types/map';
 
 const EMPTY_FC: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
@@ -59,8 +79,8 @@ const DEFAULT_SAVED_KEYS = [
   'rail_station:station-mrt-phileo',
 ];
 
-/** Realistic simulation speeds in m/s (walking, campus shuttle, driving). */
-const SIM_SPEED_MPS: Record<RouteMode, number> = { walk: 1.4, bus: 6.5, drive: 9 };
+/** Realistic simulation speeds in m/s (walking, cycling, campus shuttle, driving). */
+const SIM_SPEED_MPS: Record<RouteMode, number> = { walk: 1.4, bike: 4.1, bus: 6.5, drive: 9 };
 
 function computeBearing(a: [number, number], b: [number, number]): number {
   const dx = (b[0] - a[0]) * Math.cos((a[1] * Math.PI) / 180);
@@ -124,8 +144,14 @@ export function App() {
   const [context, setContext] = useState<UmContextBundle>(EMPTY_CONTEXT);
   const [joggingGeo, setJoggingGeo] = useState<GeoJSON.FeatureCollection>(EMPTY_FC);
   const [transitData, setTransitData] = useState<TransitData>(EMPTY_TRANSIT);
+  const [elevationGrid, setElevationGrid] = useState<ElevationGridData | null>(null);
   const [searchItems, setSearchItems] = useState<SearchItem[]>([]);
   const [graphStats, setGraphStats] = useState({ nodes: 0, edges: 0 });
+  const [mapCenterCoord, setMapCenterCoord] = useState<[number, number]>(UM_CENTER);
+  const [campusWeather, setCampusWeather] = useState<CampusWeatherReport>(() =>
+    buildDiurnalFallbackWeather(),
+  );
+  const [weatherLoading, setWeatherLoading] = useState(false);
   const routerRef = useRef<CampusRouter | null>(null);
   const appliedUrlRef = useRef(false);
 
@@ -211,12 +237,14 @@ export function App() {
   const [locating, setLocating] = useState(false);
   const [locationNotice, setLocationNotice] = useState<string | null>(null);
 
-  // Directions state: Walk is default (with stepFree disabled by default), Bus 2nd, Drive 3rd
+  // Directions state: Walk is default (with stepFree disabled by default), Bike 2nd, Bus 3rd, Drive 4th
   const [routeMode, setRouteMode] = useState<RouteMode>('walk');
   const [stepFree, setStepFree] = useState(false);
   const [originItem, setOriginItem] = useState<SearchItem | null>(null);
+  const [routeStops, setRouteStops] = useState<RouteStopSlot[]>([]);
   const [destItem, setDestItem] = useState<SearchItem | null>(null);
-  const [pickTarget, setPickTarget] = useState<'origin' | 'destination' | null>(null);
+  const [pickTarget, setPickTarget] = useState<PickTarget>(null);
+  const stopSeqRef = useRef(0);
 
   // Derived mutually exclusive open flags
   const zoneDirectoryOpen = activePanel === 'explore';
@@ -300,6 +328,14 @@ export function App() {
   const [liveGpsHeading, setLiveGpsHeading] = useState<number | null>(null);
   const [gpsStatus, setGpsStatus] = useState<'idle' | 'watching' | 'error'>('idle');
   const [gpsError, setGpsError] = useState<string | null>(null);
+  const [zoneTransition, setZoneTransition] = useState<ZoneTransitionEvent | null>(null);
+  const prevNavZoneRef = useRef<{
+    initialized: boolean;
+    zone: FacultyProps | null;
+    lastTransitionCoord: [number, number] | null;
+    lastToastAt: number;
+  }>({ initialized: false, zone: null, lastTransitionCoord: null, lastToastAt: 0 });
+  const zoneToastSeqRef = useRef(0);
 
   // Fetch static UM dataset on mount
   useEffect(() => {
@@ -317,6 +353,7 @@ export function App() {
           transitRes,
           idxRes,
           jogRes,
+          elevRes,
         ] = await Promise.all([
           fetch(`./data/um_boundary.geojson?v=${v}`),
           fetch(`./data/um_faculties.geojson?v=${v}`),
@@ -327,6 +364,7 @@ export function App() {
           fetch(`./data/um_transit.json?v=${v}`),
           fetch(`./data/um_search_index.json?v=${v}`),
           fetch(`./data/um_jogging.geojson?v=${v}`).catch(() => null),
+          fetch(`./data/um_elevation.json?v=${v}`).catch(() => null),
         ]);
 
         if (
@@ -342,7 +380,7 @@ export function App() {
           throw new Error('Failed to load UM campus dataset files');
         }
 
-        const [bJson, fJson, buJson, rJson, cJson, gJson, tJson, sJson, jJson] = (await Promise.all([
+        const [bJson, fJson, buJson, rJson, cJson, gJson, tJson, sJson, jJson, eJson] = (await Promise.all([
           boundaryRes.json(),
           facRes.json(),
           bldRes.json(),
@@ -352,6 +390,7 @@ export function App() {
           transitRes.json(),
           idxRes.json(),
           jogRes && jogRes.ok ? jogRes.json() : Promise.resolve(EMPTY_FC),
+          elevRes && elevRes.ok ? elevRes.json() : Promise.resolve(null),
         ])) as [
           GeoJSON.FeatureCollection,
           GeoJSON.FeatureCollection,
@@ -362,6 +401,7 @@ export function App() {
           TransitData,
           SearchItem[],
           GeoJSON.FeatureCollection,
+          ElevationGridData | null,
         ];
 
         if (cancelled) return;
@@ -409,6 +449,7 @@ export function App() {
         setContext(ctxBundle);
         setJoggingGeo(jJson);
         setTransitData(tJson);
+        setElevationGrid(eJson);
         setSearchItems(sJson);
         setGraphStats({ nodes: gJson.nodes.length, edges: gJson.edges.length });
         routerRef.current = new CampusRouter(gJson, tJson);
@@ -434,6 +475,31 @@ export function App() {
       cancelled = true;
     };
   }, []);
+
+  // Fetch live Open-Meteo campus weather on mount + every 15 minutes
+  const refreshCampusWeather = useCallback(async (signal?: AbortSignal) => {
+    setWeatherLoading(true);
+    try {
+      const report = await fetchCampusWeather(signal);
+      setCampusWeather(report);
+    } catch {
+      // Ignore abort; network errors are handled with KL diurnal fallback inside fetchCampusWeather
+    } finally {
+      setWeatherLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void refreshCampusWeather(controller.signal);
+    const interval = window.setInterval(() => {
+      void refreshCampusWeather();
+    }, 15 * 60 * 1000);
+    return () => {
+      controller.abort();
+      window.clearInterval(interval);
+    };
+  }, [refreshCampusWeather]);
 
   // Structured lookup tables
   const allFaculties = useMemo<FacultyProps[]>(() => {
@@ -498,17 +564,54 @@ export function App() {
       .sort((a, b) => b.floor - a.floor || a.name.localeCompare(b.name));
   }, [allRooms, activeBuilding]);
 
-  // Compute active route whenever origin/dest/mode/stepFree change
+  const filledStops = useMemo<SearchItem[]>(() => {
+    return routeStops.map((s) => s.item).filter((it): it is SearchItem => Boolean(it));
+  }, [routeStops]);
+
+  const stopWaypoints = useMemo<RouteWaypoint[]>(() => {
+    return filledStops.map((it, idx) => ({
+      index: idx + 1,
+      label: it.title,
+      coord: it.center,
+    }));
+  }, [filledStops]);
+
+  // Compute active route whenever origin/stops/dest/mode/stepFree change
   const computedRoute = useMemo<ComputedRoute | null>(() => {
     if (!routerRef.current || !originItem || !destItem) return null;
-    if (originItem.id === destItem.id && originItem.kind === destItem.kind) return null;
-    return routerRef.current.computeRoute(originItem, destItem, routeMode, { stepFree });
-  }, [originItem, destItem, routeMode, stepFree]);
+    if (filledStops.length === 0 && originItem.id === destItem.id && originItem.kind === destItem.kind) return null;
+    return routerRef.current.computeMultiStopRoute(originItem, filledStops, destItem, routeMode, { stepFree });
+  }, [originItem, filledStops, destItem, routeMode, stepFree]);
 
-  // Multi-modal comparison across Walk, Bus, and Drive
+  // Multi-modal comparison across Walk, Bike, Bus, and Drive
   const modeComparison = useMemo(() => {
-    return compareAllModes(routerRef.current, originItem, destItem, stepFree);
-  }, [originItem, destItem, stepFree, loading]);
+    return compareAllModes(routerRef.current, originItem, destItem, stepFree, filledStops);
+  }, [originItem, filledStops, destItem, stepFree, loading]);
+
+  // Route elevation profile (gain/drop, interactive SVG chart, steep-hill step tags)
+  const routeElevationProfile = useMemo(
+    () => computeRouteElevationProfile(computedRoute, elevationGrid),
+    [computedRoute, elevationGrid],
+  );
+
+  // Current elevation readout source: near-campus GPS -> selected place -> map camera centre
+  const currentMapElevation = useMemo(() => {
+    if (!elevationGrid) return { elevationM: null as number | null, source: 'map' as const };
+    if (userLocation && distMeters(userLocation.coord, UM_CENTER) <= 3500) {
+      const gpsElev = sampleElevation(userLocation.coord, elevationGrid);
+      if (gpsElev !== null) return { elevationM: gpsElev, source: 'gps' as const };
+    }
+    const focusedCoord =
+      activeRoom?.center ?? activeBuilding?.center ?? activeFaculty?.center ?? activePoi?.center ?? null;
+    if (focusedCoord) {
+      const placeElev = sampleElevation(focusedCoord, elevationGrid);
+      if (placeElev !== null) return { elevationM: placeElev, source: 'place' as const };
+    }
+    return {
+      elevationM: sampleElevation(mapCenterCoord, elevationGrid),
+      source: 'map' as const,
+    };
+  }, [elevationGrid, userLocation, activeRoom, activeBuilding, activeFaculty, activePoi, mapCenterCoord]);
 
   // Geometry metrics along computedRoute for Live Navigation
   const routeMetrics = useMemo(() => {
@@ -707,6 +810,78 @@ export function App() {
     };
   }, [navActive, navSimulating, liveGpsCoord, liveGpsHeading, computedRoute, routeMetrics, navProgressM]);
 
+  // Fast point-in-polygon campus zone spatial index for live navigation tracking
+  const zoneSpatialIndex = useMemo(() => buildZoneSpatialIndex(facultiesGeo), [facultiesGeo]);
+
+  const currentNavZone = useMemo<FacultyProps | null>(() => {
+    if (!navActive || !liveNavState.coord) return null;
+    return findZoneAtCoord(liveNavState.coord, zoneSpatialIndex);
+  }, [navActive, liveNavState.coord, zoneSpatialIndex]);
+
+  const liveNavElevationM = useMemo<number | null>(() => {
+    if (!navActive || !liveNavState.coord || !elevationGrid) return null;
+    return sampleElevation(liveNavState.coord, elevationGrid);
+  }, [navActive, liveNavState.coord, elevationGrid]);
+
+  const liveNavRemainingElev = useMemo(() => {
+    if (!navActive || !routeElevationProfile) return null;
+    return computeRemainingElevation(routeElevationProfile, navProgressM);
+  }, [navActive, routeElevationProfile, navProgressM]);
+
+  // Detect entering / leaving / crossing campus zones along active route
+  useEffect(() => {
+    if (!navActive || !liveNavState.coord) {
+      prevNavZoneRef.current = {
+        initialized: false,
+        zone: null,
+        lastTransitionCoord: null,
+        lastToastAt: 0,
+      };
+      setZoneTransition(null);
+      return;
+    }
+
+    const tracker = prevNavZoneRef.current;
+    if (!tracker.initialized) {
+      tracker.initialized = true;
+      tracker.zone = currentNavZone;
+      tracker.lastTransitionCoord = liveNavState.coord;
+      return;
+    }
+
+    const change = resolveZoneTransition(tracker.zone, currentNavZone);
+    if (!change) return;
+
+    // Brief GPS edge hysteresis (ignore < 10m jitter on exact polygon borders in live GPS mode)
+    const movedM = tracker.lastTransitionCoord
+      ? distMeters(tracker.lastTransitionCoord, liveNavState.coord)
+      : Infinity;
+    if (!navSimulating && movedM < 10) return;
+
+    const now = performance.now();
+    tracker.zone = currentNavZone;
+    tracker.lastTransitionCoord = liveNavState.coord;
+
+    // Throttle rapid continuous scrub drags while always firing on normal crossings
+    if (now - tracker.lastToastAt < 350) return;
+    tracker.lastToastAt = now;
+
+    zoneToastSeqRef.current += 1;
+    setZoneTransition({
+      id: zoneToastSeqRef.current,
+      type: change.type,
+      leavingZone: change.leavingZone,
+      enteringZone: change.enteringZone,
+    });
+  }, [navActive, navSimulating, liveNavState.coord, currentNavZone]);
+
+  // Auto-fade zone transition toast after 4.5 seconds
+  useEffect(() => {
+    if (!zoneTransition) return;
+    const timer = window.setTimeout(() => setZoneTransition(null), 4500);
+    return () => window.clearTimeout(timer);
+  }, [zoneTransition]);
+
   // Camera & selection handlers
   const resetToCampus = useCallback(() => {
     setNavActive(false);
@@ -843,6 +1018,17 @@ export function App() {
       if (fromIt && toIt) {
         setOriginItem(fromIt);
         setDestItem(toIt);
+        if (params.stopKeys.length > 0) {
+          const restoredStops: RouteStopSlot[] = [];
+          for (const key of params.stopKeys) {
+            const found = searchItemByKey.get(key);
+            if (found) {
+              stopSeqRef.current += 1;
+              restoredStops.push({ id: `stop-${stopSeqRef.current}`, item: found });
+            }
+          }
+          setRouteStops(restoredStops);
+        }
         if (params.mode) setRouteMode(params.mode);
         setActivePanel('directions');
         return;
@@ -1016,6 +1202,7 @@ export function App() {
     if (!originItem || !destItem) return;
     const shareUrl = buildAtlasShareUrl(window.location.origin + window.location.pathname, {
       fromKey: `${originItem.kind}:${originItem.id}`,
+      stopKeys: filledStops.map((s) => `${s.kind}:${s.id}`),
       toKey: `${destItem.kind}:${destItem.id}`,
       mode: routeMode,
     });
@@ -1026,7 +1213,74 @@ export function App() {
     } catch {
       setLocationNotice('Route link updated in address bar');
     }
-  }, [originItem, destItem, routeMode, stepFree]);
+  }, [originItem, filledStops, destItem, routeMode]);
+
+  // Multi-stop itinerary handlers
+  const handleAddStop = useCallback(() => {
+    stopSeqRef.current += 1;
+    const newId = `stop-${stopSeqRef.current}`;
+    setRouteStops((prev) => [...prev, { id: newId, item: null }]);
+  }, []);
+
+  const handleUpdateStop = useCallback((stopId: string, item: SearchItem | null) => {
+    setRouteStops((prev) => prev.map((slot) => (slot.id === stopId ? { ...slot, item } : slot)));
+  }, []);
+
+  const handleRemoveStop = useCallback((stopId: string) => {
+    setRouteStops((prev) => prev.filter((slot) => slot.id !== stopId));
+    setPickTarget((prev) => (prev && typeof prev === 'object' && prev.stopId === stopId ? null : prev));
+  }, []);
+
+  const handleMoveStop = useCallback((stopId: string, direction: -1 | 1) => {
+    setRouteStops((prev) => {
+      const idx = prev.findIndex((s) => s.id === stopId);
+      const target = idx + direction;
+      if (idx < 0 || target < 0 || target >= prev.length) return prev;
+      const next = prev.slice();
+      const [moved] = next.splice(idx, 1);
+      next.splice(target, 0, moved);
+      return next;
+    });
+  }, []);
+
+  const handleReorderStops = useCallback((fromIdx: number, toIdx: number) => {
+    setRouteStops((prev) => {
+      if (fromIdx < 0 || toIdx < 0 || fromIdx >= prev.length || toIdx >= prev.length || fromIdx === toIdx) {
+        return prev;
+      }
+      const next = prev.slice();
+      const [moved] = next.splice(fromIdx, 1);
+      next.splice(toIdx, 0, moved);
+      return next;
+    });
+  }, []);
+
+  const handleOptimizeStops = useCallback(() => {
+    if (!originItem || !destItem || filledStops.length < 2) return;
+    const router = routerRef.current;
+    const distanceFn =
+      router && filledStops.length <= 10
+        ? (a: SearchItem, b: SearchItem) => router.measureDistance(a, b, routeMode, stepFree)
+        : undefined;
+    const res = optimizeStopOrder(originItem, filledStops, destItem, distanceFn);
+    if (!res.changed) {
+      setLocationNotice('Stops are already in the shortest order');
+      return;
+    }
+    setRouteStops((prev) => {
+      const emptySlots = prev.filter((s) => !s.item);
+      const reordered: RouteStopSlot[] = res.orderedStops.map((item) => {
+        stopSeqRef.current += 1;
+        return { id: `stop-${stopSeqRef.current}`, item };
+      });
+      return [...reordered, ...emptySlots];
+    });
+    const savedText =
+      res.savedDistanceM >= 1000
+        ? `${(res.savedDistanceM / 1000).toFixed(2)} km`
+        : `${res.savedDistanceM} m`;
+    setLocationNotice(`Optimized stop order · saved ${savedText}`);
+  }, [originItem, destItem, filledStops, routeMode, stepFree]);
 
   const handleHighlightTransitRoute = useCallback((routeId: string | null) => {
     setHighlightedTransitId(routeId);
@@ -1106,6 +1360,11 @@ export function App() {
         setOriginItem(customItem);
       } else if (pickTarget === 'destination') {
         setDestItem(customItem);
+      } else if (pickTarget && typeof pickTarget === 'object') {
+        const targetId = pickTarget.stopId;
+        setRouteStops((prev) =>
+          prev.map((slot) => (slot.id === targetId ? { ...slot, item: customItem } : slot)),
+        );
       }
       setPickTarget(null);
     },
@@ -1257,6 +1516,7 @@ export function App() {
         route={directionsOpen || navActive ? computedRoute : null}
         originCoord={directionsOpen || navActive ? originItem?.center ?? null : null}
         destCoord={directionsOpen || navActive ? destItem?.center ?? null : null}
+        stopWaypoints={directionsOpen || navActive ? stopWaypoints : []}
         pickTarget={pickTarget}
         cameraCmd={cameraCmd}
         liveNavActive={navActive}
@@ -1271,6 +1531,7 @@ export function App() {
         onSelectRoom={selectRoom}
         onSelectPoi={selectPoiById}
         onPickCoordinate={handlePickCoordinate}
+        onCenterChange={setMapCenterCoord}
       />
 
       <nav className="app-rail" aria-label="Primary navigation">
@@ -1438,6 +1699,19 @@ export function App() {
         />
       )}
 
+      {!navActive && (
+        <CampusConditionsBar
+          elevationM={currentMapElevation.elevationM}
+          elevationSource={currentMapElevation.source}
+          weather={campusWeather}
+          weatherLoading={weatherLoading}
+          hasRightBanner={Boolean(bannerInfo)}
+          onRefreshWeather={() => {
+            void refreshCampusWeather();
+          }}
+        />
+      )}
+
       {highlightedTransitRoute && !navActive && (
         <div className="transit-map-pill" role="status">
           <span
@@ -1528,10 +1802,13 @@ export function App() {
         navActive={navActive}
         items={searchItems}
         origin={originItem}
+        stops={routeStops}
         destination={destItem}
         mode={routeMode}
         stepFree={stepFree}
         route={computedRoute}
+        elevationProfile={routeElevationProfile}
+        weather={campusWeather}
         modeComparison={modeComparison}
         pickTarget={pickTarget}
         hasUserLocation={Boolean(userLocation)}
@@ -1539,9 +1816,16 @@ export function App() {
         onUseCurrentLocation={handleUseCurrentLocation}
         onSetOrigin={setOriginItem}
         onSetDestination={setDestItem}
+        onAddStop={handleAddStop}
+        onUpdateStop={handleUpdateStop}
+        onRemoveStop={handleRemoveStop}
+        onMoveStop={handleMoveStop}
+        onReorderStops={handleReorderStops}
+        onOptimizeStops={handleOptimizeStops}
         onSwap={() => {
           setOriginItem(destItem);
           setDestItem(originItem);
+          setRouteStops((prev) => prev.slice().reverse());
         }}
         onChangeMode={(m) => {
           setRouteMode(m);
@@ -1550,10 +1834,26 @@ export function App() {
           }
         }}
         onToggleStepFree={setStepFree}
-        onTogglePickTarget={(t) => setPickTarget((prev) => (prev === t ? null : t))}
+        onTogglePickTarget={(t) =>
+          setPickTarget((prev) => {
+            if (prev === t) return null;
+            if (
+              prev &&
+              typeof prev === 'object' &&
+              typeof t === 'object' &&
+              prev.stopId === t.stopId
+            ) {
+              return null;
+            }
+            return t;
+          })
+        }
         onStartNavigation={handleStartNavigation}
         onShareRoute={handleShareRoute}
         onSelectStep={handleSelectStep}
+        onFocusCoord={(coord) => {
+          sendCamera({ center: coord, zoom: 17.8, pitch: 52 });
+        }}
         onClose={closeActivePanel}
       />
 
@@ -1576,6 +1876,12 @@ export function App() {
           gpsError={gpsError}
           arrived={liveNavState.arrived}
           speedMps={currentSpeedMps}
+          currentZone={currentNavZone}
+          zoneTransition={zoneTransition}
+          currentElevationM={liveNavElevationM}
+          remainingElevation={liveNavRemainingElev}
+          weather={campusWeather}
+          onDismissZoneTransition={() => setZoneTransition(null)}
           onScrubProgressM={(meters) => {
             if (!navSimulating) setNavSimulating(true);
             setNavProgressM(meters);

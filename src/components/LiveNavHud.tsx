@@ -1,6 +1,14 @@
 import type { FC } from 'react';
 import { Icon, type IconName } from './Icon';
-import type { ComputedRoute, RouteMode, RouteStep } from '../types/map';
+import { zoneKindLabel } from '../theme';
+import type {
+  CampusWeatherReport,
+  ComputedRoute,
+  FacultyProps,
+  RouteMode,
+  RouteStep,
+  ZoneTransitionEvent,
+} from '../types/map';
 
 interface LiveNavHudProps {
   route: ComputedRoute;
@@ -20,6 +28,12 @@ interface LiveNavHudProps {
   gpsError: string | null;
   arrived: boolean;
   speedMps: number;
+  currentZone: FacultyProps | null;
+  zoneTransition: ZoneTransitionEvent | null;
+  currentElevationM: number | null;
+  remainingElevation: { remainingGainM: number; remainingDropM: number } | null;
+  weather: CampusWeatherReport | null;
+  onDismissZoneTransition: () => void;
   onScrubProgressM: (meters: number) => void;
   onTogglePause: () => void;
   onToggleSpeed: () => void;
@@ -33,15 +47,24 @@ function formatDistance(meters: number): string {
   return `${Math.max(1, Math.round(meters))} m`;
 }
 
+function zoneDisplayName(zone: FacultyProps): string {
+  const short = zone.short_label?.trim();
+  if (short && short.length <= 28) return short;
+  return zone.code || zone.name;
+}
+
 function stepIcon(step: RouteStep | undefined, mode: RouteMode): IconName {
   if (!step) {
+    if (mode === 'bike') return 'bike';
     if (mode === 'bus') return 'bus';
     if (mode === 'drive') return 'car';
     return 'walk';
   }
+  if (step.kind === 'waypoint') return 'flag';
   if (step.kind === 'bus') return 'bus';
   if (step.kind === 'indoor') return 'door';
   if (step.kind === 'steps') return 'arrowUp';
+  if (mode === 'bike') return 'bike';
   if (step.kind === 'road' && mode === 'drive') return 'car';
   return 'arrowUp';
 }
@@ -99,6 +122,12 @@ export const LiveNavHud: FC<LiveNavHudProps> = ({
   gpsError,
   arrived,
   speedMps,
+  currentZone,
+  zoneTransition,
+  currentElevationM,
+  remainingElevation,
+  weather,
+  onDismissZoneTransition,
   onScrubProgressM,
   onTogglePause,
   onToggleSpeed,
@@ -109,6 +138,30 @@ export const LiveNavHud: FC<LiveNavHudProps> = ({
   const currentStep = route.steps[currentStepIndex] ?? route.steps[0];
   const nextStep = route.steps[currentStepIndex + 1];
   const percent = Math.min(100, Math.max(0, progressFraction * 100));
+
+  const zoneAccentColor = currentZone?.accent || 'rgba(255, 255, 255, 0.72)';
+
+  const transitionSummary = zoneTransition
+    ? zoneTransition.type === 'cross' && zoneTransition.leavingZone && zoneTransition.enteringZone
+      ? {
+          title: `Entering ${zoneDisplayName(zoneTransition.enteringZone)}`,
+          detail: `Leaving ${zoneDisplayName(zoneTransition.leavingZone)} · ${zoneKindLabel(zoneTransition.enteringZone.zone_kind)}`,
+          dotColor: zoneTransition.enteringZone.accent || '#1a73e8',
+        }
+      : zoneTransition.type === 'enter' && zoneTransition.enteringZone
+        ? {
+            title: `Entering ${zoneDisplayName(zoneTransition.enteringZone)}`,
+            detail: zoneKindLabel(zoneTransition.enteringZone.zone_kind),
+            dotColor: zoneTransition.enteringZone.accent || '#1a73e8',
+          }
+        : zoneTransition.leavingZone
+          ? {
+              title: `Leaving ${zoneDisplayName(zoneTransition.leavingZone)}`,
+              detail: `${zoneKindLabel(zoneTransition.leavingZone.zone_kind)} · Campus corridor`,
+              dotColor: zoneTransition.leavingZone.accent || '#5f6368',
+            }
+          : null
+    : null;
 
   return (
     <div className="nav-hud" role="region" aria-label="Live navigation">
@@ -148,6 +201,57 @@ export const LiveNavHud: FC<LiveNavHudProps> = ({
             )}
           </div>
         </div>
+
+        <div className="nav-hud__zone" aria-live="polite">
+          <span
+            className="nav-hud__zone-dot"
+            style={{ background: zoneAccentColor }}
+            aria-hidden="true"
+          />
+          {currentZone ? (
+            <span className="nav-hud__zone-text">
+              In <strong>{zoneDisplayName(currentZone)}</strong>
+              <span className="nav-hud__zone-sep" aria-hidden="true">·</span>
+              <span>{zoneKindLabel(currentZone.zone_kind)}</span>
+            </span>
+          ) : (
+            <span className="nav-hud__zone-text">Campus corridor</span>
+          )}
+        </div>
+
+        {(currentElevationM !== null || weather) && (
+          <div className="nav-hud__conditions" aria-label="Live altitude and weather conditions">
+            {currentElevationM !== null && (
+              <span className="nav-hud__cond-item m3-mono">
+                <Icon name="mountain" size={12} />
+                <span>{Math.round(currentElevationM)} m</span>
+                {remainingElevation && remainingElevation.remainingGainM >= 2 && (
+                  <span style={{ opacity: 0.85 }}>(+{remainingElevation.remainingGainM}m left)</span>
+                )}
+              </span>
+            )}
+            {currentElevationM !== null && weather && (
+              <span className="nav-hud__zone-sep" aria-hidden="true">·</span>
+            )}
+            {weather && (
+              <>
+                <span className="nav-hud__cond-item">
+                  <Icon name={weather.isDay ? 'sun' : 'moon'} size={12} />
+                  <span>
+                    {weather.heatLabel} <span className="m3-mono">{Math.round(weather.feelsLikeC)}°</span>
+                  </span>
+                </span>
+                <span className="nav-hud__zone-sep" aria-hidden="true">·</span>
+                <span className="nav-hud__cond-item">
+                  <Icon name={weather.rainLevel === 'raining' || weather.rainLevel === 'likely' ? 'cloudRain' : 'droplet'} size={12} />
+                  <span className="m3-mono">
+                    {weather.rainLevel === 'raining' ? 'Raining' : `${weather.rainChancePct}% rain`}
+                  </span>
+                </span>
+              </>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="nav-hud__surface">
@@ -238,6 +342,33 @@ export const LiveNavHud: FC<LiveNavHudProps> = ({
           </div>
         )}
       </div>
+
+      {zoneTransition && transitionSummary && (
+        <div
+          key={zoneTransition.id}
+          className="zone-toast"
+          role="status"
+          aria-live="polite"
+        >
+          <span
+            className="zone-toast__dot"
+            style={{ background: transitionSummary.dotColor }}
+            aria-hidden="true"
+          />
+          <div className="zone-toast__body">
+            <span className="zone-toast__title">{transitionSummary.title}</span>
+            <span className="zone-toast__detail">{transitionSummary.detail}</span>
+          </div>
+          <button
+            type="button"
+            className="m3-icon-btn m3-icon-btn--sm"
+            onClick={onDismissZoneTransition}
+            aria-label="Dismiss zone notice"
+          >
+            <Icon name="close" size={13} />
+          </button>
+        </div>
+      )}
     </div>
   );
 };
