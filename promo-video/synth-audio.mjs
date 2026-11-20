@@ -16,7 +16,7 @@ const STEP_S = BEAT_S / 4; // 16th note
 const TOTAL_SAMPLES = Math.floor(SAMPLE_RATE * DURATION_S);
 
 // Exact 10-act cut timestamps (seconds)
-export const SCENE_CUTS = [0.0, 2.8, 6.2, 9.6, 12.4, 15.6, 19.4, 24.2, 27.8, 31.2];
+export const SCENE_CUTS = [0.0, 3.0, 6.5, 10.2, 13.4, 16.6, 20.4, 25.0, 28.2, 31.4];
 
 function midiToHz(midi) {
   return 440 * Math.pow(2, (midi - 69) / 12);
@@ -246,7 +246,7 @@ export function generateSoundtrack(outputWavPath) {
     const prog = PROGRESSION[bar % PROGRESSION.length];
     const isIntro = bar === 0;
     const isClimax = bar >= 5 && bar <= 15;
-    const isOutro = barStart >= 30.9;
+    const isOutro = barStart >= 31.1;
 
     if (!isOutro) {
       addPad(barStart, prog.chord.slice(0, 4), BEAT_S * 3.9, isClimax ? 0.08 : 0.055);
@@ -257,12 +257,12 @@ export function generateSoundtrack(outputWavPath) {
     for (let p = 0; p < PLUCK_STEPS.length; p++) {
       const step = PLUCK_STEPS[p];
       const t = barStart + step * STEP_S;
-      if (t >= 32.0) break;
+      if (t >= 32.2) break;
       const note = prog.arp[p % prog.arp.length] + (isClimax && p % 3 === 0 ? 12 : 0);
       const pan = p % 2 === 0 ? -0.32 : 0.32;
       const vel = step % 4 === 0 ? 0.22 : 0.16;
       addPluck(t, note, vel, pan, isOutro ? 0.48 : 0.24);
-      if (t + STEP_S * 3 < 32.6) {
+      if (t + STEP_S * 3 < 32.8) {
         addPluck(t + STEP_S * 3, note, vel * 0.28, -pan * 0.85, 0.22);
       }
     }
@@ -271,7 +271,7 @@ export function generateSoundtrack(outputWavPath) {
       for (const b of BASS_PATTERN) {
         const t = barStart + b.step * STEP_S;
         if (isIntro && b.step < 8) continue;
-        if (t >= 31.1) break;
+        if (t >= 31.3) break;
         addBass(t, prog.bass, b.dur * STEP_S, isClimax ? 0.28 : 0.22);
       }
     } else {
@@ -281,7 +281,7 @@ export function generateSoundtrack(outputWavPath) {
     if (!isOutro) {
       for (let s = 0; s < 16; s++) {
         const t = barStart + s * STEP_S;
-        if (t >= 31.15) break;
+        if (t >= 31.35) break;
         if (s === 0 || s === 8 || (!isIntro && s === 10 && bar % 2 === 1)) {
           if (!(isIntro && s < 4)) addKick(t, isClimax ? 0.56 : 0.46);
         }
@@ -297,11 +297,11 @@ export function generateSoundtrack(outputWavPath) {
     }
   }
 
-  // Final resolve chime at 31.2s (End Card reveal)
-  addPluck(31.2, 65, 0.24, -0.25, 0.95);
-  addPluck(31.26, 72, 0.22, 0.25, 1.0);
-  addPluck(31.32, 76, 0.22, -0.15, 1.1);
-  addPluck(31.38, 81, 0.24, 0.2, 1.25);
+  // Final resolve chime at 31.4s (End Card reveal)
+  addPluck(31.4, 65, 0.24, -0.25, 0.95);
+  addPluck(31.46, 72, 0.22, 0.25, 1.0);
+  addPluck(31.52, 76, 0.22, -0.15, 1.1);
+  addPluck(31.58, 81, 0.24, 0.2, 1.25);
 
   for (let i = 1; i < SCENE_CUTS.length - 1; i++) {
     const cutS = SCENE_CUTS[i];
