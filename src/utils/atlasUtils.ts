@@ -180,10 +180,13 @@ export interface ParsedAtlasParams {
   toKey: string | null;
   stopKeys: string[];
   mode: RouteMode | null;
+  routeName: string | null;
+  customEncoded: string | null;
+  customSnap: boolean;
 }
 
 /**
- * Parses URL search parameters for deep-linking to a campus place or route.
+ * Parses URL search parameters for deep-linking to a campus place, standard route, or custom route.
  */
 export function parseAtlasUrlParams(search: string): ParsedAtlasParams {
   const params = new URLSearchParams(search);
@@ -202,11 +205,24 @@ export function parseAtlasUrlParams(search: string): ParsedAtlasParams {
     rawMode === 'walk' || rawMode === 'bike' || rawMode === 'bus' || rawMode === 'drive'
       ? rawMode
       : null;
-  return { placeKey, fromKey, toKey, stopKeys, mode };
+  const rawName = params.get('name')?.trim() || null;
+  const customEncoded = params.get('custom')?.trim() || null;
+  const snapParam = params.get('snap');
+  const customSnap = snapParam !== '0';
+  return {
+    placeKey,
+    fromKey,
+    toKey,
+    stopKeys,
+    mode,
+    routeName: rawName,
+    customEncoded,
+    customSnap,
+  };
 }
 
 /**
- * Builds a clean shareable URL for a selected campus entity or route.
+ * Builds a clean shareable URL for a selected campus entity, standard route, or custom route.
  */
 export function buildAtlasShareUrl(
   baseHref: string,
@@ -216,17 +232,26 @@ export function buildAtlasShareUrl(
     toKey?: string | null;
     stopKeys?: string[];
     mode?: RouteMode;
+    routeName?: string | null;
+    customEncoded?: string | null;
+    customSnap?: boolean;
   },
 ): string {
   const url = new URL(baseHref, 'https://um-atlas.local');
   url.search = '';
-  if (opts.fromKey && opts.toKey) {
+  if (opts.customEncoded) {
+    url.searchParams.set('custom', opts.customEncoded);
+    if (opts.mode) url.searchParams.set('mode', opts.mode);
+    if (opts.customSnap === false) url.searchParams.set('snap', '0');
+    if (opts.routeName?.trim()) url.searchParams.set('name', opts.routeName.trim());
+  } else if (opts.fromKey && opts.toKey) {
     url.searchParams.set('from', opts.fromKey);
     if (opts.stopKeys && opts.stopKeys.length > 0) {
       url.searchParams.set('stops', opts.stopKeys.join(','));
     }
     url.searchParams.set('to', opts.toKey);
     if (opts.mode) url.searchParams.set('mode', opts.mode);
+    if (opts.routeName?.trim()) url.searchParams.set('name', opts.routeName.trim());
   } else if (opts.placeKey) {
     url.searchParams.set('place', opts.placeKey);
   }
@@ -238,6 +263,7 @@ export type ActivePanel =
   | 'inspector'
   | 'saved'
   | 'directions'
+  | 'draw'
   | 'layers'
   | 'explore'
   | 'transit';

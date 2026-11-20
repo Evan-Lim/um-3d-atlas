@@ -21,6 +21,7 @@ import type {
 interface DirectionsPanelProps {
   open: boolean;
   navActive: boolean;
+  overviewActive: boolean;
   items: SearchItem[];
   origin: SearchItem | null;
   stops: RouteStopSlot[];
@@ -28,15 +29,18 @@ interface DirectionsPanelProps {
   mode: RouteMode;
   stepFree: boolean;
   route: ComputedRoute | null;
+  routeName: string;
   elevationProfile: RouteElevationProfile | null;
   weather: CampusWeatherReport | null;
   modeComparison: ModeComparison;
   pickTarget: PickTarget;
   hasUserLocation: boolean;
+  canStartLiveNav: boolean;
   locating: boolean;
   onUseCurrentLocation: () => void;
   onSetOrigin: (item: SearchItem | null) => void;
   onSetDestination: (item: SearchItem | null) => void;
+  onChangeRouteName: (name: string) => void;
   onAddStop: () => void;
   onUpdateStop: (stopId: string, item: SearchItem | null) => void;
   onRemoveStop: (stopId: string) => void;
@@ -48,7 +52,8 @@ interface DirectionsPanelProps {
   onToggleStepFree: (enabled: boolean) => void;
   onTogglePickTarget: (target: Exclude<PickTarget, null>) => void;
   onStartNavigation: () => void;
-  onShareRoute: () => void;
+  onOpenOverview: () => void;
+  onOpenShareModal: () => void;
   onSelectStep: (step: RouteStep) => void;
   onFocusCoord: (coord: [number, number]) => void;
   onClose: () => void;
@@ -208,6 +213,7 @@ function EndpointInput({
 export function DirectionsPanel({
   open,
   navActive,
+  overviewActive,
   items,
   origin,
   stops,
@@ -215,15 +221,18 @@ export function DirectionsPanel({
   mode,
   stepFree,
   route,
+  routeName,
   elevationProfile,
   weather,
   modeComparison,
   pickTarget,
   hasUserLocation,
+  canStartLiveNav,
   locating,
   onUseCurrentLocation,
   onSetOrigin,
   onSetDestination,
+  onChangeRouteName,
   onAddStop,
   onUpdateStop,
   onRemoveStop,
@@ -235,7 +244,8 @@ export function DirectionsPanel({
   onToggleStepFree,
   onTogglePickTarget,
   onStartNavigation,
-  onShareRoute,
+  onOpenOverview,
+  onOpenShareModal,
   onSelectStep,
   onFocusCoord,
   onClose,
@@ -300,7 +310,7 @@ export function DirectionsPanel({
 
   const { isDragging, dragStyle, handleProps } = useBottomSheetDrag(collapsed, setCollapsed);
 
-  if (!open || navActive) return null;
+  if (!open || navActive || overviewActive) return null;
 
   const pickLabel =
     pickTarget === 'origin'
@@ -351,10 +361,17 @@ export function DirectionsPanel({
           </div>
           <div className="sheet-head-actions">
             {collapsed && route && (
-              <button type="button" className="m3-btn m3-btn--filled m3-btn--sm" onClick={onStartNavigation}>
-                <Icon name="directions" size={14} />
-                Start
-              </button>
+              canStartLiveNav ? (
+                <button type="button" className="m3-btn m3-btn--filled m3-btn--sm" onClick={onStartNavigation}>
+                  <Icon name="directions" size={14} />
+                  Start
+                </button>
+              ) : (
+                <button type="button" className="m3-btn m3-btn--tonal m3-btn--sm" onClick={onOpenOverview}>
+                  <Icon name="overview" size={14} />
+                  Overview
+                </button>
+              )
             )}
             <button type="button" className="m3-icon-btn m3-icon-btn--sm" onClick={onClose} aria-label="Close directions">
               <Icon name="close" size={16} />
@@ -608,8 +625,8 @@ export function DirectionsPanel({
           </div>
         ) : (
           <>
-            <div className="route-summary">
-              <div style={{ minWidth: 0, flex: 1 }}>
+            <div className="route-summary route-summary--stacked">
+              <div style={{ minWidth: 0, width: '100%' }}>
                 <div style={{ display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', gap: '4px 8px' }}>
                   <span className="route-summary__time m3-mono">
                     {Math.max(1, Math.round(route.estimatedMinutes))} min
@@ -621,7 +638,7 @@ export function DirectionsPanel({
                     </span>
                   )}
                 </div>
-                <div className="m3-meta-line" style={{ marginTop: 6, color: 'var(--on-primary-container)' }}>
+                <div className="m3-meta-line" style={{ marginTop: 5, color: 'var(--on-primary-container)' }}>
                   {route.waypoints && route.waypoints.length > 0 && (
                     <span>
                       {route.waypoints.length} stop{route.waypoints.length > 1 ? 's' : ''}
@@ -661,26 +678,71 @@ export function DirectionsPanel({
                   )}
                 </div>
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+
+              <div className="route-summary__action-bar">
                 <button
                   type="button"
-                  className="m3-icon-btn m3-icon-btn--sm"
-                  onClick={onShareRoute}
-                  title="Copy route link"
-                  aria-label="Share route link"
-                  style={{ color: 'var(--on-primary-container)' }}
+                  className={`m3-btn m3-btn--sm ${canStartLiveNav ? 'm3-btn--outlined' : 'm3-btn--filled'}`}
+                  onClick={onOpenOverview}
                 >
-                  <Icon name="share" size={16} />
+                  <Icon name="overview" size={14} />
+                  Overview
                 </button>
                 <button
                   type="button"
-                  className="m3-btn m3-btn--filled route-summary__start"
+                  className="m3-btn m3-btn--filled m3-btn--sm route-summary__start"
                   onClick={onStartNavigation}
+                  disabled={!canStartLiveNav}
+                  title={
+                    canStartLiveNav
+                      ? 'Start live GPS turn-by-turn navigation'
+                      : 'Set starting location to My location to enable live Start'
+                  }
                 >
-                  <Icon name="directions" size={16} />
+                  <Icon name="directions" size={14} />
                   Start
                 </button>
+                <button
+                  type="button"
+                  className="m3-btn m3-btn--outlined m3-btn--sm"
+                  onClick={onOpenShareModal}
+                  title="Name route, copy link, or export PNG"
+                  aria-label="Share route or export PNG"
+                  style={{ marginLeft: 'auto' }}
+                >
+                  <Icon name="share" size={14} />
+                  Share
+                </button>
               </div>
+
+              {!canStartLiveNav && (
+                <div className="route-start-gate-row">
+                  <span className="route-start-gate-hint">
+                    Start requires starting from your current location.
+                  </span>
+                  <button
+                    type="button"
+                    className="route-start-gate-btn"
+                    onClick={onUseCurrentLocation}
+                    disabled={locating}
+                  >
+                    Use my location
+                  </button>
+                </div>
+              )}
+
+              {routeName.trim() && (
+                <div className="route-named-row">
+                  <span className="route-named-row__label">Named: {routeName}</span>
+                  <button
+                    type="button"
+                    className="route-start-gate-btn"
+                    onClick={() => onChangeRouteName('')}
+                  >
+                    Clear name
+                  </button>
+                </div>
+              )}
             </div>
 
             {route.mode === 'walk' && walkMetrics.stepsEstimate > 0 && (

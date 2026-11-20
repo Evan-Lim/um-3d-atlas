@@ -1811,6 +1811,25 @@ button {
   justify-content: space-between;
   gap: 12px;
 }
+.route-summary--stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+.route-summary__top-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.route-summary__action-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.route-summary__action-bar .m3-btn {
+  flex: 1;
+}
 .route-summary__time {
   font-family: var(--font-display);
   font-size: 23px;
@@ -1830,6 +1849,78 @@ button {
 }
 .route-summary__start {
   flex-shrink: 0;
+}
+.route-start-gate-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(26, 115, 232, 0.16);
+  font-size: 11px;
+  line-height: 1.35;
+}
+[data-theme="dark"] .route-start-gate-row {
+  border-top-color: rgba(138, 180, 248, 0.2);
+}
+.route-start-gate-hint {
+  opacity: 0.86;
+}
+.route-start-gate-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: rgba(255, 255, 255, 0.56);
+  color: var(--on-primary-container);
+  border-radius: 999px;
+  padding: 4px 9px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background-color 0.15s ease;
+}
+.route-start-gate-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.85);
+}
+[data-theme="dark"] .route-start-gate-btn {
+  background: rgba(255, 255, 255, 0.12);
+}
+[data-theme="dark"] .route-start-gate-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.2);
+}
+.route-named-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 11px;
+  height: 36px;
+  border-radius: 12px;
+  background: var(--surface-low);
+  border: 1px solid var(--border-subtle);
+  color: var(--on-surface-muted);
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+.route-named-row:focus-within {
+  border-color: var(--primary);
+  background: var(--surface-lowest);
+  color: var(--primary);
+}
+.route-name-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--on-surface);
+}
+.route-name-input::placeholder {
+  color: var(--on-surface-muted);
+  font-weight: 400;
 }
 
 .route-weather-strip {
@@ -2740,6 +2831,404 @@ label.layer-row {
   gap: 4px;
   white-space: nowrap;
 }
+.nav-hud__coords {
+  margin-top: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10px;
+  letter-spacing: 0.015em;
+  color: rgba(255, 255, 255, 0.78);
+}
+.nav-hud__reroute-note {
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 500;
+  color: #fde68a;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------------
+   Route Overview Bar (Step Preview + 3D Simulation)
+   ------------------------------------------------------------------ */
+.overview-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 20px;
+  transform: translateX(-50%);
+  z-index: 44;
+  width: min(560px, calc(100vw - var(--rail-w) - 48px));
+  padding: 14px 16px;
+  border-radius: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  animation: sheet-in 0.2s cubic-bezier(0.2, 0, 0, 1);
+}
+.overview-bar__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.overview-bar__title-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.overview-bar__eyebrow {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--primary);
+  flex-shrink: 0;
+}
+.overview-bar__title {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--on-surface);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.overview-bar__stats {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--on-surface-variant);
+}
+.overview-bar__step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 14px;
+  background: var(--surface-low);
+  border: 1px solid var(--border-subtle);
+}
+.overview-bar__step-title {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--on-surface);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.overview-bar__step-meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 1px;
+  font-size: 10.5px;
+  color: var(--on-surface-muted);
+}
+.overview-bar__scrubber {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.overview-bar__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+/* ------------------------------------------------------------------
+   Custom Route Builder Drawer & Desktop Drag-to-Snap Handle
+   ------------------------------------------------------------------ */
+.draw-panel__tools {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 18px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.draw-panel__snap {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  cursor: pointer;
+  padding: 2px 0;
+}
+.draw-panel__actions-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.draw-empty-guide {
+  padding: 20px 16px;
+  border-radius: 16px;
+  background: var(--surface-low);
+  border: 1px dashed var(--outline-variant);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 6px;
+}
+.draw-empty-guide__icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: var(--primary-container);
+  color: var(--on-primary-container);
+  display: grid;
+  place-items: center;
+  margin-bottom: 2px;
+}
+.draw-empty-guide__title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--on-surface);
+}
+.draw-empty-guide__text {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--on-surface-muted);
+  max-width: 300px;
+}
+.draw-points-section {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.draw-points-section__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.draw-points-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.draw-point-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px 5px 8px;
+  border-radius: 12px;
+  background: var(--surface-low);
+  border: 1px solid var(--border-subtle);
+}
+.draw-point-row__main {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  padding: 2px 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  text-align: left;
+  cursor: pointer;
+}
+.draw-point-row__badge {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--surface-lowest);
+  color: var(--primary);
+  border: 2px solid var(--primary);
+  font-size: 10px;
+  font-weight: 600;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+.draw-point-row__badge--a {
+  background: #1a73e8;
+  border-color: #1a73e8;
+  color: #ffffff;
+}
+.draw-point-row__badge--b {
+  background: #d93025;
+  border-color: #d93025;
+  color: #ffffff;
+}
+.draw-point-row__body {
+  min-width: 0;
+  flex: 1;
+}
+.draw-point-row__title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--on-surface);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.draw-point-row__sub {
+  font-size: 10px;
+  color: var(--on-surface-muted);
+}
+
+/* Desktop Drag-to-Snap Route Line Handle */
+.route-drag-handle {
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 3px solid #1a73e8;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.32);
+  cursor: grab;
+  transition: transform 0.12s ease;
+}
+.route-drag-handle:hover {
+  transform: scale(1.18);
+}
+
+/* ------------------------------------------------------------------
+   Share & PNG Route Card Export Modal
+   ------------------------------------------------------------------ */
+.share-modal {
+  width: min(640px, 100%);
+  max-height: min(820px, calc(100vh - 36px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-3);
+  animation: sheet-in 0.2s cubic-bezier(0.2, 0, 0, 1);
+}
+.share-modal__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 20px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.share-modal__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 20px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.share-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.share-field__label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--on-surface-variant);
+}
+.share-name-input,
+.share-url-input {
+  height: 38px;
+  padding: 0 12px;
+  border-radius: 11px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-low);
+  color: var(--on-surface);
+  font-size: 12.5px;
+  outline: none;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+.share-name-input:focus,
+.share-url-input:focus {
+  border-color: var(--primary);
+  background: var(--surface-lowest);
+}
+.share-url-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.share-url-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--on-surface-variant);
+}
+.share-export-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.share-export-controls__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.share-bg-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.share-bg-row__label {
+  font-size: 11.5px;
+  color: var(--on-surface-muted);
+}
+.share-preview-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.share-preview-frame {
+  border-radius: 16px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-low);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.share-preview-frame.is-checkerboard {
+  background-color: #f1f5f9;
+  background-image:
+    linear-gradient(45deg, #cbd5e1 25%, transparent 25%),
+    linear-gradient(-45deg, #cbd5e1 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #cbd5e1 75%),
+    linear-gradient(-45deg, transparent 75%, #cbd5e1 75%);
+  background-size: 18px 18px;
+  background-position: 0 0, 0 9px, 9px -9px, -9px 0;
+}
+[data-theme="dark"] .share-preview-frame.is-checkerboard {
+  background-color: #1e293b;
+  background-image:
+    linear-gradient(45deg, #334155 25%, transparent 25%),
+    linear-gradient(-45deg, #334155 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #334155 75%),
+    linear-gradient(-45deg, transparent 75%, #334155 75%);
+}
+.share-preview-canvas {
+  width: 100%;
+  height: auto;
+  display: block;
+  max-height: 360px;
+  object-fit: contain;
+}
+.share-modal__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 2px;
+}
 
 /* ------------------------------------------------------------------
    Floating Campus Elevation & Weather Comfort Readout
@@ -3455,15 +3944,16 @@ label.layer-row {
   }
   .mobile-bar__item {
     flex: 1;
+    min-width: 0;
     border: none;
     background: transparent;
-    border-radius: 16px;
-    padding: 6px 0 5px;
+    border-radius: 14px;
+    padding: 5px 0 4px;
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 3px;
-    font-size: 9.5px;
+    gap: 2px;
+    font-size: 9px;
     font-weight: 400;
     color: var(--on-surface-variant);
     cursor: pointer;
@@ -3663,12 +4153,36 @@ label.layer-row {
     align-items: center;
   }
   .directions.is-collapsed .directions__form,
+  .directions.is-collapsed .draw-panel__tools,
   .directions.is-collapsed .directions__body {
     display: none;
   }
   .directions.is-collapsed .directions__head {
     padding: 2px 12px 10px 14px;
     align-items: center;
+  }
+  .overview-bar {
+    left: 12px;
+    right: 12px;
+    bottom: 84px;
+    transform: none;
+    width: auto;
+    padding: 12px 14px;
+    border-radius: 20px;
+  }
+  .share-modal {
+    max-height: calc(100dvh - 24px);
+    border-radius: 22px;
+  }
+  .share-modal__head {
+    padding: 14px 16px 10px;
+  }
+  .share-modal__body {
+    padding: 12px 16px 16px;
+  }
+  .share-modal__actions {
+    flex-direction: column-reverse;
+    align-items: stretch;
   }
   /* Unified mobile bottom-right vertical control stack: Locate directly above Zoom/Compass */
   .maplibregl-ctrl-bottom-right {

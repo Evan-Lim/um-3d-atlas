@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from './components/Icon';
 import { CampusConditionsBar } from './components/CampusConditionsBar';
+import { CustomRoutePanel } from './components/CustomRoutePanel';
 import { DirectionsPanel } from './components/DirectionsPanel';
 import { FloorControls } from './components/FloorControls';
 import { InspectorPanel } from './components/InspectorPanel';
 import { LayerControls } from './components/LayerControls';
 import { LiveNavHud } from './components/LiveNavHud';
+import { RouteOverviewBar } from './components/RouteOverviewBar';
 import { SavedPlacesSheet } from './components/SavedPlacesSheet';
 import { SearchBar, type SearchFilterChip } from './components/SearchBar';
+import { ShareRouteModal } from './components/ShareRouteModal';
 import { TransitHubModal } from './components/TransitHubModal';
 import { ZoneBanner } from './components/ZoneBanner';
 import { ZoneDirectoryModal } from './components/ZoneDirectoryModal';
@@ -23,6 +26,16 @@ import {
   buildDiurnalFallbackWeather,
   fetchCampusWeather,
 } from './utils/weatherUtils';
+import {
+  computeCustomRoute,
+  decodeCustomAnchors,
+  encodeCustomAnchors,
+  filterRemainingStops,
+  findInsertLegIndex,
+  isCoordAtUserLocation,
+  isOriginAtUserLocation,
+  projectPointOntoPolyline,
+} from './utils/routeTools';
 import {
   type ActivePanel,
   type RecommendedPlace,
@@ -44,6 +57,7 @@ import type {
   BuildingProps,
   CampusWeatherReport,
   ComputedRoute,
+  CustomRouteAnchor,
   ElevationGridData,
   FacultyProps,
   GraphData,
@@ -243,14 +257,37 @@ export function App() {
   const [originItem, setOriginItem] = useState<SearchItem | null>(null);
   const [routeStops, setRouteStops] = useState<RouteStopSlot[]>([]);
   const [destItem, setDestItem] = useState<SearchItem | null>(null);
+  const [routeName, setRouteName] = useState('');
   const [pickTarget, setPickTarget] = useState<PickTarget>(null);
   const stopSeqRef = useRef(0);
+
+  // Custom Route Builder state (separate Draw Route mode with desktop drag-to-snap)
+  const [customAnchors, setCustomAnchors] = useState<CustomRouteAnchor[]>([]);
+  const [customMode, setCustomMode] = useState<'walk' | 'bike' | 'drive'>('walk');
+  const [customSnap, setCustomSnap] = useState(true);
+  const [customRouteName, setCustomRouteName] = useState('');
+  const customAnchorSeqRef = useRef(0);
+  const [activeRouteSource, setActiveRouteSource] = useState<'directions' | 'custom'>('directions');
+
+  // Route Overview + Step Preview + Simulation state
+  const [overviewActive, setOverviewActive] = useState(false);
+  const [overviewStepIndex, setOverviewStepIndex] = useState(0);
+  const [overviewSimulating, setOverviewSimulating] = useState(false);
+  const [overviewPaused, setOverviewPaused] = useState(false);
+  const [overviewSimSpeed, setOverviewSimSpeed] = useState<1 | 3>(1);
+  const [overviewProgressM, setOverviewProgressM] = useState(0);
+  const [overviewFollow, setOverviewFollow] = useState(true);
+
+  // Share & PNG Export modal state + WebGL canvas handle
+  const [shareModalOpen, setShareModalOpen] = useState(false);
+  const mapCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   // Derived mutually exclusive open flags
   const zoneDirectoryOpen = activePanel === 'explore';
   const transitHubOpen = activePanel === 'transit';
   const savedSheetOpen = activePanel === 'saved';
   const directionsOpen = activePanel === 'directions';
+  const drawOpen = activePanel === 'draw';
   const layersOpen = activePanel === 'layers';
 
   // Camera command
@@ -328,6 +365,11 @@ export function App() {
   const [liveGpsHeading, setLiveGpsHeading] = useState<number | null>(null);
   const [gpsStatus, setGpsStatus] = useState<'idle' | 'watching' | 'error'>('idle');
   const [gpsError, setGpsError] = useState<string | null>(null);
+  const [reroutedRoute, setReroutedRoute] = useState<ComputedRoute | null>(null);
+  const [rerouteState, setRerouteState] = useState<'idle' | 'rerouting' | 'updated'>('idle');
+  const passedStopIdsRef = useRef<Set<string>>(new Set());
+  const offRouteStreakRef = useRef(0);
+  const lastRerouteAtRef = useRef(0);
   const [zoneTransition, setZoneTransition] = useState<ZoneTransitionEvent | null>(null);
   const prevNavZoneRef = useRef<{
     initialized: boolean;
@@ -336,6 +378,13 @@ export function App() {
     lastToastAt: number;
   }>({ initialized: false, zone: null, lastTransitionCoord: null, lastToastAt: 0 });
   const zoneToastSeqRef = useRef(0);
+
+  // Auto-clear transient "Route recalculated" indicator after 3.5 seconds
+  useEffect(() => {
+    if (rerouteState !== 'updated') return;
+    const timer = window.setTimeout(() => setRerouteState('idle'), 3500);
+    return () => window.clearTimeout(timer);
+  }, [rerouteState]);
 
   // Fetch static UM dataset on mount
   useEffect(() => {
@@ -576,23 +625,70 @@ export function App() {
     }));
   }, [filledStops]);
 
-  // Compute active route whenever origin/stops/dest/mode/stepFree change
+  // Compute active standard Directions route whenever origin/stops/dest/mode/stepFree change
   const computedRoute = useMemo<ComputedRoute | null>(() => {
     if (!routerRef.current || !originItem || !destItem) return null;
     if (filledStops.length === 0 && originItem.id === destItem.id && originItem.kind === destItem.kind) return null;
     return routerRef.current.computeMultiStopRoute(originItem, filledStops, destItem, routeMode, { stepFree });
-  }, [originItem, filledStops, destItem, routeMode, stepFree]);
+  }, [originItem, filledStops, destItem, routeMode, stepFree, loading]);
+
+  // Compute active Custom Drawn Route whenever anchors/mode/snap change
+  const customComputedRoute = useMemo<ComputedRoute | null>(() => {
+    if (customAnchors.length < 2) return null;
+    return computeCustomRoute(routerRef.current, customAnchors, customMode, customSnap);
+  }, [customAnchors, customMode, customSnap, loading]);
+
+  const customWaypoints = useMemo<RouteWaypoint[]>(() => {
+    return customAnchors.slice(1, -1).map((a, idx) => ({
+      index: idx + 1,
+      label: a.label || `Point ${idx + 2}`,
+      coord: a.coord,
+    }));
+  }, [customAnchors]);
+
+  // Unified route currently displayed on map / Overview / Live Navigation / Share Modal
+  const baseActiveRoute = activeRouteSource === 'custom' ? customComputedRoute : computedRoute;
+  const activeDisplayRoute = navActive && reroutedRoute ? reroutedRoute : baseActiveRoute;
+  const activeDisplayMode: RouteMode = activeRouteSource === 'custom' ? customMode : routeMode;
+  const activeDisplayName = activeRouteSource === 'custom' ? customRouteName : routeName;
+  const activeDisplayWaypoints = activeRouteSource === 'custom' ? customWaypoints : stopWaypoints;
+
+  // Location gating: Start is enabled ONLY when starting location matches user's current location
+  const canStartDirectionsNav = useMemo(
+    () => Boolean(computedRoute) && isOriginAtUserLocation(originItem, userLocation),
+    [computedRoute, originItem, userLocation],
+  );
+  const canStartCustomNav = useMemo(
+    () =>
+      Boolean(customComputedRoute) &&
+      customAnchors.length >= 2 &&
+      (customAnchors[0].id.startsWith('my-loc-') ||
+        isCoordAtUserLocation(customAnchors[0].coord, userLocation)),
+    [customComputedRoute, customAnchors, userLocation],
+  );
+  const canStartActiveNav =
+    activeRouteSource === 'custom' ? canStartCustomNav : canStartDirectionsNav;
 
   // Multi-modal comparison across Walk, Bike, Bus, and Drive
   const modeComparison = useMemo(() => {
     return compareAllModes(routerRef.current, originItem, destItem, stepFree, filledStops);
   }, [originItem, filledStops, destItem, stepFree, loading]);
 
-  // Route elevation profile (gain/drop, interactive SVG chart, steep-hill step tags)
+  // Route elevation profiles (gain/drop, interactive SVG chart, steep-hill step tags)
   const routeElevationProfile = useMemo(
     () => computeRouteElevationProfile(computedRoute, elevationGrid),
     [computedRoute, elevationGrid],
   );
+  const customElevationProfile = useMemo(
+    () => computeRouteElevationProfile(customComputedRoute, elevationGrid),
+    [customComputedRoute, elevationGrid],
+  );
+  const activeElevationProfile = useMemo(() => {
+    if (navActive && reroutedRoute) {
+      return computeRouteElevationProfile(reroutedRoute, elevationGrid);
+    }
+    return activeRouteSource === 'custom' ? customElevationProfile : routeElevationProfile;
+  }, [navActive, reroutedRoute, elevationGrid, activeRouteSource, customElevationProfile, routeElevationProfile]);
 
   // Current elevation readout source: near-campus GPS -> selected place -> map camera centre
   const currentMapElevation = useMemo(() => {
@@ -613,12 +709,12 @@ export function App() {
     };
   }, [elevationGrid, userLocation, activeRoom, activeBuilding, activeFaculty, activePoi, mapCenterCoord]);
 
-  // Geometry metrics along computedRoute for Live Navigation
+  // Geometry metrics along activeDisplayRoute for Live Navigation & Overview Simulation
   const routeMetrics = useMemo(() => {
-    if (!computedRoute || computedRoute.coordinates.length < 2) {
+    if (!activeDisplayRoute || activeDisplayRoute.coordinates.length < 2) {
       return { cumDists: [0], totalGeomM: 0, stepStartsM: [0] };
     }
-    const coords = computedRoute.coordinates;
+    const coords = activeDisplayRoute.coordinates;
     const cumDists: number[] = [0];
     for (let i = 1; i < coords.length; i++) {
       cumDists.push(cumDists[i - 1] + distMeters(coords[i - 1], coords[i]));
@@ -628,7 +724,7 @@ export function App() {
     // Map each step's start coord to a cumulative distance along the route
     const stepStartsM: number[] = [];
     let searchFrom = 0;
-    for (const s of computedRoute.steps) {
+    for (const s of activeDisplayRoute.steps) {
       let bestIdx = searchFrom;
       let bestD = Infinity;
       for (let i = searchFrom; i < coords.length; i++) {
@@ -643,14 +739,14 @@ export function App() {
       stepStartsM.push(cumDists[bestIdx]);
     }
     return { cumDists, totalGeomM, stepStartsM };
-  }, [computedRoute]);
+  }, [activeDisplayRoute]);
 
   // Simulated Live Follow animation timer when navActive && navSimulating && !navPaused
   useEffect(() => {
-    if (!navActive || !navSimulating || navPaused || !computedRoute) return;
+    if (!navActive || !navSimulating || navPaused || !activeDisplayRoute) return;
     if (routeMetrics.totalGeomM <= 0) return;
 
-    const baseSpeedMps = SIM_SPEED_MPS[routeMode];
+    const baseSpeedMps = SIM_SPEED_MPS[activeDisplayMode];
     let lastTs = performance.now();
     let rafId = 0;
 
@@ -669,9 +765,43 @@ export function App() {
 
     rafId = window.requestAnimationFrame(tick);
     return () => window.cancelAnimationFrame(rafId);
-  }, [navActive, navSimulating, navPaused, navSimSpeed, routeMode, computedRoute, routeMetrics.totalGeomM]);
+  }, [navActive, navSimulating, navPaused, navSimSpeed, activeDisplayMode, activeDisplayRoute, routeMetrics.totalGeomM]);
 
-  // Real device GPS watcher when navActive && !navSimulating
+  // Overview 3D Walkthrough Simulation timer
+  useEffect(() => {
+    if (!overviewActive || !overviewSimulating || overviewPaused || !activeDisplayRoute) return;
+    if (routeMetrics.totalGeomM <= 0) return;
+
+    const baseSpeedMps = SIM_SPEED_MPS[activeDisplayMode];
+    let lastTs = performance.now();
+    let rafId = 0;
+
+    const tick = (now: number) => {
+      const dt = Math.min(0.12, (now - lastTs) / 1000);
+      lastTs = now;
+      setOverviewProgressM((prev) => {
+        const next = prev + baseSpeedMps * overviewSimSpeed * dt;
+        if (next >= routeMetrics.totalGeomM) {
+          return routeMetrics.totalGeomM;
+        }
+        return next;
+      });
+      rafId = window.requestAnimationFrame(tick);
+    };
+
+    rafId = window.requestAnimationFrame(tick);
+    return () => window.cancelAnimationFrame(rafId);
+  }, [
+    overviewActive,
+    overviewSimulating,
+    overviewPaused,
+    overviewSimSpeed,
+    activeDisplayMode,
+    activeDisplayRoute,
+    routeMetrics.totalGeomM,
+  ]);
+
+  // Real device GPS watcher + Adaptive Off-Route Rerouting when navActive && !navSimulating
   useEffect(() => {
     if (!navActive || navSimulating) {
       setGpsStatus('idle');
@@ -706,6 +836,11 @@ export function App() {
         window.clearTimeout(fallbackTimer);
         setGpsError(null);
         setLiveGpsCoord(coord);
+        setUserLocation({
+          coord,
+          accuracy: Number.isFinite(pos.coords.accuracy) ? pos.coords.accuracy : 0,
+          timestamp: pos.timestamp,
+        });
         if (typeof pos.coords.heading === 'number' && !Number.isNaN(pos.coords.heading)) {
           setLiveGpsHeading(pos.coords.heading);
         }
@@ -722,18 +857,108 @@ export function App() {
         lastGpsSampleRef.current = { coord, time: pos.timestamp };
         setLiveGpsSpeed(speedMps === null ? null : Math.min(speedMps, 40));
 
-        // Snap progress onto nearest point along computed route
-        if (computedRoute && computedRoute.coordinates.length >= 2) {
-          let bestIdx = 0;
-          let bestD = Infinity;
-          for (let i = 0; i < computedRoute.coordinates.length; i++) {
-            const d = distMeters(coord, computedRoute.coordinates[i]);
-            if (d < bestD) {
-              bestD = d;
-              bestIdx = i;
+        // Project onto active route polyline + run adaptive off-route rerouting
+        if (activeDisplayRoute && activeDisplayRoute.coordinates.length >= 2) {
+          const proj = projectPointOntoPolyline(coord, activeDisplayRoute.coordinates);
+          setNavProgressM(proj.alongM);
+
+          // Track passed intermediate stops so reroutes only target remaining stops
+          if (activeRouteSource === 'directions' && filledStops.length > 0) {
+            const { newlyPassedIds } = filterRemainingStops(
+              filledStops,
+              passedStopIdsRef.current,
+              coord,
+              28,
+            );
+            for (const id of newlyPassedIds) passedStopIdsRef.current.add(id);
+          } else if (activeRouteSource === 'custom' && customAnchors.length > 2) {
+            const midAsItems: SearchItem[] = customAnchors.slice(1, -1).map((a) => ({
+              id: a.id,
+              kind: 'point',
+              title: a.label,
+              subtitle: 'Custom point',
+              keywords: '',
+              center: a.coord,
+              entrance_node: -1,
+            }));
+            const { newlyPassedIds } = filterRemainingStops(
+              midAsItems,
+              passedStopIdsRef.current,
+              coord,
+              28,
+            );
+            for (const id of newlyPassedIds) passedStopIdsRef.current.add(id);
+          }
+
+          // Adaptive off-route detection: >24m for 2 consecutive fixes or >32m immediately (4s cooldown)
+          if (proj.distanceM > 24) {
+            offRouteStreakRef.current += 1;
+          } else {
+            offRouteStreakRef.current = 0;
+          }
+
+          const nowMs = Date.now();
+          const shouldReroute =
+            (offRouteStreakRef.current >= 2 || proj.distanceM > 32) &&
+            nowMs - lastRerouteAtRef.current >= 4000 &&
+            routerRef.current !== null;
+
+          if (shouldReroute && routerRef.current) {
+            lastRerouteAtRef.current = nowMs;
+            offRouteStreakRef.current = 0;
+            setRerouteState('rerouting');
+
+            let freshRoute: ComputedRoute | null = null;
+            if (activeRouteSource === 'directions' && destItem) {
+              const liveOrigin: SearchItem = {
+                id: 'user-location',
+                kind: 'point',
+                title: 'Current location',
+                subtitle: 'Live GPS',
+                keywords: 'gps',
+                center: coord,
+                entrance_node: -1,
+              };
+              const { remaining } = filterRemainingStops(
+                filledStops,
+                passedStopIdsRef.current,
+                coord,
+                28,
+              );
+              freshRoute = routerRef.current.computeMultiStopRoute(
+                liveOrigin,
+                remaining,
+                destItem,
+                routeMode,
+                { stepFree },
+              );
+            } else if (activeRouteSource === 'custom' && customAnchors.length >= 2) {
+              const remainingMid = customAnchors
+                .slice(1, -1)
+                .filter((a) => !passedStopIdsRef.current.has(`point:${a.id}`));
+              const lastAnchor = customAnchors[customAnchors.length - 1];
+              const liveAnchor: CustomRouteAnchor = {
+                id: 'live-gps-origin',
+                coord,
+                label: 'Current location',
+              };
+              freshRoute = computeCustomRoute(
+                routerRef.current,
+                [liveAnchor, ...remainingMid, lastAnchor],
+                customMode,
+                customSnap,
+              );
+            }
+
+            if (freshRoute && freshRoute.coordinates.length >= 2) {
+              setReroutedRoute(freshRoute);
+              setNavProgressM(0);
+              setRerouteState('updated');
+              setLocationNotice('Off route — recalculated turns & ETA');
+            } else {
+              setRerouteState('idle');
             }
           }
-          setNavProgressM(routeMetrics.cumDists[bestIdx] ?? 0);
         }
       },
       (err) => {
@@ -750,11 +975,23 @@ export function App() {
       window.clearTimeout(fallbackTimer);
       navigator.geolocation.clearWatch(watchId);
     };
-  }, [navActive, navSimulating, computedRoute, routeMetrics.cumDists]);
+  }, [
+    navActive,
+    navSimulating,
+    activeDisplayRoute,
+    activeRouteSource,
+    filledStops,
+    destItem,
+    routeMode,
+    stepFree,
+    customAnchors,
+    customMode,
+    customSnap,
+  ]);
 
   // Compute live navigation puck position, heading & step index
   const liveNavState = useMemo(() => {
-    if (!navActive || !computedRoute || computedRoute.coordinates.length < 2) {
+    if (!navActive || !activeDisplayRoute || activeDisplayRoute.coordinates.length < 2) {
       return {
         coord: null as [number, number] | null,
         heading: 0,
@@ -768,7 +1005,7 @@ export function App() {
     }
 
     const { cumDists, totalGeomM, stepStartsM } = routeMetrics;
-    const coords = computedRoute.coordinates;
+    const coords = activeDisplayRoute.coordinates;
     const clampedM = Math.max(0, Math.min(navProgressM, totalGeomM));
 
     // Interpolate along polyline
@@ -795,7 +1032,7 @@ export function App() {
     const distanceToNextStepM = Math.max(0, nextStepM - clampedM);
     const remainingDistanceM = Math.max(0, totalGeomM - clampedM);
     const frac = totalGeomM > 0 ? clampedM / totalGeomM : 1;
-    const remainingMinutes = computedRoute.estimatedMinutes * (1 - frac);
+    const remainingMinutes = activeDisplayRoute.estimatedMinutes * (1 - frac);
     const arrived = clampedM >= totalGeomM - 2;
 
     return {
@@ -808,7 +1045,45 @@ export function App() {
       progressFraction: frac,
       arrived,
     };
-  }, [navActive, navSimulating, liveGpsCoord, liveGpsHeading, computedRoute, routeMetrics, navProgressM]);
+  }, [navActive, navSimulating, liveGpsCoord, liveGpsHeading, activeDisplayRoute, routeMetrics, navProgressM]);
+
+  // Compute overview simulation puck state when previewing walkthrough in Overview mode
+  const overviewSimState = useMemo(() => {
+    if (!overviewActive || !overviewSimulating || !activeDisplayRoute || activeDisplayRoute.coordinates.length < 2) {
+      return {
+        coord: null as [number, number] | null,
+        heading: 0,
+        stepIndex: overviewStepIndex,
+        progressFraction: 0,
+      };
+    }
+
+    const { cumDists, totalGeomM, stepStartsM } = routeMetrics;
+    const coords = activeDisplayRoute.coordinates;
+    const clampedM = Math.max(0, Math.min(overviewProgressM, totalGeomM));
+    let segIdx = 0;
+    while (segIdx < cumDists.length - 2 && cumDists[segIdx + 1] < clampedM) {
+      segIdx += 1;
+    }
+    const segStartM = cumDists[segIdx];
+    const segEndM = cumDists[segIdx + 1];
+    const segLen = Math.max(0.01, segEndM - segStartM);
+    const t = Math.max(0, Math.min(1, (clampedM - segStartM) / segLen));
+    const a = coords[segIdx];
+    const b = coords[segIdx + 1];
+    const coord: [number, number] = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    const heading = computeBearing(a, b);
+    let stepIndex = 0;
+    for (let i = 0; i < stepStartsM.length; i++) {
+      if (clampedM >= stepStartsM[i] - 5) stepIndex = i;
+    }
+    return {
+      coord,
+      heading,
+      stepIndex,
+      progressFraction: totalGeomM > 0 ? clampedM / totalGeomM : 0,
+    };
+  }, [overviewActive, overviewSimulating, activeDisplayRoute, routeMetrics, overviewProgressM, overviewStepIndex]);
 
   // Fast point-in-polygon campus zone spatial index for live navigation tracking
   const zoneSpatialIndex = useMemo(() => buildZoneSpatialIndex(facultiesGeo), [facultiesGeo]);
@@ -824,9 +1099,9 @@ export function App() {
   }, [navActive, liveNavState.coord, elevationGrid]);
 
   const liveNavRemainingElev = useMemo(() => {
-    if (!navActive || !routeElevationProfile) return null;
-    return computeRemainingElevation(routeElevationProfile, navProgressM);
-  }, [navActive, routeElevationProfile, navProgressM]);
+    if (!navActive || !activeElevationProfile) return null;
+    return computeRemainingElevation(activeElevationProfile, navProgressM);
+  }, [navActive, activeElevationProfile, navProgressM]);
 
   // Detect entering / leaving / crossing campus zones along active route
   useEffect(() => {
@@ -885,6 +1160,10 @@ export function App() {
   // Camera & selection handlers
   const resetToCampus = useCallback(() => {
     setNavActive(false);
+    setOverviewActive(false);
+    setOverviewSimulating(false);
+    setReroutedRoute(null);
+    setRerouteState('idle');
     setActivePoi(null);
     setActiveRoom(null);
     setActiveBuilding(null);
@@ -1007,11 +1286,35 @@ export function App() {
     [facultyById, buildingById, roomById, selectFaculty, selectBuilding, selectRoom, sendCamera, recordRecentKey],
   );
 
-  // Apply URL query parameters (?place=... or ?from=...&to=...) once data is loaded
+  // Apply URL query parameters (?custom=..., ?place=..., or ?from=...&to=...&name=...) once data is loaded
   useEffect(() => {
     if (loading || appliedUrlRef.current || searchItems.length === 0) return;
     appliedUrlRef.current = true;
     const params = parseAtlasUrlParams(window.location.search);
+
+    if (params.customEncoded) {
+      const decoded = decodeCustomAnchors(params.customEncoded);
+      if (decoded.length >= 2) {
+        setCustomAnchors(decoded);
+        if (params.mode === 'walk' || params.mode === 'bike' || params.mode === 'drive') {
+          setCustomMode(params.mode);
+        }
+        if (params.customSnap !== null) setCustomSnap(params.customSnap);
+        if (params.routeName) setCustomRouteName(params.routeName);
+        setActiveRouteSource('custom');
+        setActivePanel('draw');
+        const b = coordsBounds(decoded.map((a) => a.coord));
+        if (b) {
+          sendCamera({
+            bounds: b,
+            padding: { top: 90, bottom: 90, left: window.innerWidth <= 900 ? 24 : 520, right: 80 },
+            pitch: 46,
+          });
+        }
+        return;
+      }
+    }
+
     if (params.fromKey && params.toKey) {
       const fromIt = searchItemByKey.get(params.fromKey);
       const toIt = searchItemByKey.get(params.toKey);
@@ -1030,6 +1333,8 @@ export function App() {
           setRouteStops(restoredStops);
         }
         if (params.mode) setRouteMode(params.mode);
+        if (params.routeName) setRouteName(params.routeName);
+        setActiveRouteSource('directions');
         setActivePanel('directions');
         return;
       }
@@ -1040,7 +1345,7 @@ export function App() {
         handleSelectSearchItem(placeIt);
       }
     }
-  }, [loading, searchItems.length, searchItemByKey, handleSelectSearchItem]);
+  }, [loading, searchItems.length, searchItemByKey, handleSelectSearchItem, sendCamera]);
 
   const resolveTargetToSearchItem = useCallback(
     (target: { kind: 'faculty' | 'building' | 'room' | 'poi'; id: string }): SearchItem | null => {
@@ -1198,22 +1503,46 @@ export function App() {
     }
   }, [activePlaceKey]);
 
-  const handleShareRoute = useCallback(async () => {
-    if (!originItem || !destItem) return;
-    const shareUrl = buildAtlasShareUrl(window.location.origin + window.location.pathname, {
-      fromKey: `${originItem.kind}:${originItem.id}`,
-      stopKeys: filledStops.map((s) => `${s.kind}:${s.id}`),
-      toKey: `${destItem.kind}:${destItem.id}`,
-      mode: routeMode,
-    });
-    window.history.replaceState(null, '', shareUrl);
-    try {
-      await navigator.clipboard.writeText(shareUrl);
-      setLocationNotice('Route link copied to clipboard');
-    } catch {
-      setLocationNotice('Route link updated in address bar');
+  const currentShareUrl = useMemo(() => {
+    const baseUrl =
+      typeof window !== 'undefined' ? window.location.origin + window.location.pathname : 'https://um-3d-atlas.netlify.app/';
+    if (activeRouteSource === 'custom' && customAnchors.length >= 2) {
+      return buildAtlasShareUrl(baseUrl, {
+        customEncoded: encodeCustomAnchors(customAnchors),
+        customSnap,
+        mode: customMode,
+        routeName: customRouteName.trim() || undefined,
+      });
     }
-  }, [originItem, filledStops, destItem, routeMode]);
+    if (originItem && destItem) {
+      return buildAtlasShareUrl(baseUrl, {
+        fromKey: `${originItem.kind}:${originItem.id}`,
+        stopKeys: filledStops.map((s) => `${s.kind}:${s.id}`),
+        toKey: `${destItem.kind}:${destItem.id}`,
+        mode: routeMode,
+        routeName: routeName.trim() || undefined,
+      });
+    }
+    return baseUrl;
+  }, [
+    activeRouteSource,
+    customAnchors,
+    customSnap,
+    customMode,
+    customRouteName,
+    originItem,
+    filledStops,
+    destItem,
+    routeMode,
+    routeName,
+  ]);
+
+  const handleOpenShareModal = useCallback((source: 'directions' | 'custom') => {
+    setActiveRouteSource(source);
+    setShareModalOpen(true);
+  }, []);
+
+  const getMapCanvas = useCallback(() => mapCanvasRef.current, []);
 
   // Multi-stop itinerary handlers
   const handleAddStop = useCallback(() => {
@@ -1289,9 +1618,9 @@ export function App() {
     }
   }, []);
 
-  // Fit route when computed in Directions mode (when not already in live navigation)
+  // Fit route when computed in Directions mode (when not in live navigation or overview)
   useEffect(() => {
-    if (!directionsOpen || navActive || !computedRoute || computedRoute.coordinates.length < 2) return;
+    if (!directionsOpen || navActive || overviewActive || !computedRoute || computedRoute.coordinates.length < 2) return;
     const b = coordsBounds(computedRoute.coordinates);
     if (b) {
       sendCamera({
@@ -1300,31 +1629,108 @@ export function App() {
         pitch: 46,
       });
     }
-  }, [directionsOpen, navActive, computedRoute, sendCamera]);
+  }, [directionsOpen, navActive, overviewActive, computedRoute, sendCamera]);
 
-  const handleStartNavigation = useCallback(() => {
-    if (!computedRoute || computedRoute.coordinates.length < 2) return;
-    setNavProgressM(0);
-    setLiveGpsCoord(null);
-    setLiveGpsHeading(null);
-    setLiveGpsSpeed(null);
-    lastGpsSampleRef.current = null;
-    setGpsError(null);
-    setNavSimulating(false);
-    setNavPaused(false);
-    setNavFollow(true);
-    setNavActive(true);
-    setActivePanel('none');
+  const fitActiveRouteOverview = useCallback(
+    (routeToFit: ComputedRoute | null) => {
+      if (!routeToFit || routeToFit.coordinates.length < 2) return;
+      const b = coordsBounds(routeToFit.coordinates);
+      if (b) {
+        sendCamera({
+          bounds: b,
+          padding: {
+            top: 84,
+            bottom: window.innerWidth <= 900 ? 240 : 210,
+            left: window.innerWidth <= 900 ? 24 : 112,
+            right: 60,
+          },
+          pitch: 46,
+        });
+      }
+    },
+    [sendCamera],
+  );
 
-    const startCoord = computedRoute.coordinates[0];
-    const nextCoord = computedRoute.coordinates[1] ?? startCoord;
-    sendCamera({
-      center: startCoord,
-      zoom: 18.5,
-      pitch: 60,
-      bearing: computeBearing(startCoord, nextCoord),
-    });
-  }, [computedRoute, sendCamera]);
+  const handleOpenOverview = useCallback(
+    (source: 'directions' | 'custom') => {
+      const targetRoute = source === 'custom' ? customComputedRoute : computedRoute;
+      if (!targetRoute || targetRoute.coordinates.length < 2) return;
+      setActiveRouteSource(source);
+      setOverviewActive(true);
+      setOverviewStepIndex(0);
+      setOverviewSimulating(false);
+      setOverviewPaused(false);
+      setOverviewProgressM(0);
+      setOverviewFollow(true);
+      setNavActive(false);
+      setActivePanel('none');
+      fitActiveRouteOverview(targetRoute);
+    },
+    [customComputedRoute, computedRoute, fitActiveRouteOverview],
+  );
+
+  const handleCloseOverview = useCallback(() => {
+    setOverviewActive(false);
+    setOverviewSimulating(false);
+    setOverviewPaused(false);
+    setActivePanel(activeRouteSource === 'custom' ? 'draw' : 'directions');
+  }, [activeRouteSource]);
+
+  const handleJumpOverviewStep = useCallback(
+    (nextIndex: number) => {
+      if (!activeDisplayRoute || activeDisplayRoute.steps.length === 0) return;
+      const clamped = Math.max(0, Math.min(activeDisplayRoute.steps.length - 1, nextIndex));
+      setOverviewSimulating(false);
+      setOverviewPaused(false);
+      setOverviewStepIndex(clamped);
+      const step = activeDisplayRoute.steps[clamped];
+      if (step) {
+        sendCamera({ center: step.coord, zoom: 18.4, pitch: 58 });
+      }
+    },
+    [activeDisplayRoute, sendCamera],
+  );
+
+  const handleStartNavigationForSource = useCallback(
+    (source: 'directions' | 'custom') => {
+      const targetRoute = source === 'custom' ? customComputedRoute : computedRoute;
+      const allowed = source === 'custom' ? canStartCustomNav : canStartDirectionsNav;
+      if (!targetRoute || targetRoute.coordinates.length < 2) return;
+      if (!allowed) {
+        setLocationNotice('Set starting point to your current location to start live navigation — or use Overview.');
+        return;
+      }
+      setActiveRouteSource(source);
+      setOverviewActive(false);
+      setOverviewSimulating(false);
+      setReroutedRoute(null);
+      setRerouteState('idle');
+      passedStopIdsRef.current.clear();
+      offRouteStreakRef.current = 0;
+      lastRerouteAtRef.current = 0;
+      setNavProgressM(0);
+      setLiveGpsCoord(userLocation?.coord ?? null);
+      setLiveGpsHeading(null);
+      setLiveGpsSpeed(null);
+      lastGpsSampleRef.current = null;
+      setGpsError(null);
+      setNavSimulating(false);
+      setNavPaused(false);
+      setNavFollow(true);
+      setNavActive(true);
+      setActivePanel('none');
+
+      const startCoord = targetRoute.coordinates[0];
+      const nextCoord = targetRoute.coordinates[1] ?? startCoord;
+      sendCamera({
+        center: startCoord,
+        zoom: 18.5,
+        pitch: 60,
+        bearing: computeBearing(startCoord, nextCoord),
+      });
+    },
+    [customComputedRoute, computedRoute, canStartCustomNav, canStartDirectionsNav, userLocation, sendCamera],
+  );
 
   const handleExitNavigation = useCallback(() => {
     setNavActive(false);
@@ -1333,8 +1739,14 @@ export function App() {
     lastGpsSampleRef.current = null;
     setGpsStatus('idle');
     setGpsError(null);
-    if (computedRoute && computedRoute.coordinates.length >= 2) {
-      const b = coordsBounds(computedRoute.coordinates);
+    setReroutedRoute(null);
+    setRerouteState('idle');
+    passedStopIdsRef.current.clear();
+    offRouteStreakRef.current = 0;
+    const returnRoute = activeRouteSource === 'custom' ? customComputedRoute : computedRoute;
+    setActivePanel(activeRouteSource === 'custom' ? 'draw' : 'directions');
+    if (returnRoute && returnRoute.coordinates.length >= 2) {
+      const b = coordsBounds(returnRoute.coordinates);
       if (b) {
         sendCamera({
           bounds: b,
@@ -1343,7 +1755,129 @@ export function App() {
         });
       }
     }
-  }, [computedRoute, sendCamera]);
+  }, [activeRouteSource, customComputedRoute, computedRoute, sendCamera]);
+
+  // Custom Route Builder handlers
+  const handleOpenDraw = useCallback(() => {
+    setOverviewActive(false);
+    setOverviewSimulating(false);
+    setPickTarget(null);
+    setActiveRouteSource('custom');
+    setActivePanel((prev) => (prev === 'draw' ? 'none' : 'draw'));
+  }, []);
+
+  const handleAddDrawAnchor = useCallback((coord: [number, number], labelHint?: string) => {
+    setActiveRouteSource('custom');
+    customAnchorSeqRef.current += 1;
+    const id = `anchor-${customAnchorSeqRef.current}`;
+    setCustomAnchors((prev) => [
+      ...prev,
+      {
+        id,
+        coord,
+        label: labelHint || (prev.length === 0 ? 'Start' : `Point ${prev.length + 1}`),
+      },
+    ]);
+  }, []);
+
+  const handleMoveDrawAnchor = useCallback(
+    (id: string, coord: [number, number]) => {
+      setCustomAnchors((prev) =>
+        prev.map((a) => {
+          if (a.id !== id) return a;
+          // If the user drags a "My location" start pin far away, clear the my-loc prefix so Start gating stays accurate
+          const movedAwayFromGps =
+            a.id.startsWith('my-loc-') && !isCoordAtUserLocation(coord, userLocation, 65);
+          return {
+            ...a,
+            id: movedAwayFromGps ? `anchor-moved-${Date.now()}` : a.id,
+            label: movedAwayFromGps ? 'Start' : a.label,
+            coord,
+          };
+        }),
+      );
+    },
+    [userLocation],
+  );
+
+  const handleRemoveDrawAnchor = useCallback((id: string) => {
+    setCustomAnchors((prev) => prev.filter((a) => a.id !== id));
+  }, []);
+
+  const handleCommitRouteDrag = useCallback(
+    (grabCoord: [number, number], dropCoord: [number, number]) => {
+      if (!customComputedRoute || customAnchors.length < 2) return;
+      const legIndex = findInsertLegIndex(customComputedRoute, customAnchors, grabCoord);
+      customAnchorSeqRef.current += 1;
+      const viaAnchor: CustomRouteAnchor = {
+        id: `via-${customAnchorSeqRef.current}`,
+        coord: dropCoord,
+        label: 'Via path',
+        isShapingPoint: true,
+      };
+      setCustomAnchors((prev) => {
+        const next = prev.slice();
+        next.splice(Math.min(prev.length - 1, legIndex + 1), 0, viaAnchor);
+        return next;
+      });
+    },
+    [customComputedRoute, customAnchors],
+  );
+
+  const handleStartCustomFromMyLocation = useCallback(async () => {
+    const location =
+      userLocation && Date.now() - userLocation.timestamp < 120000
+        ? userLocation
+        : (await requestUserLocation(true)) ?? userLocation;
+    if (!location) return;
+    setActiveRouteSource('custom');
+    const locAnchor: CustomRouteAnchor = {
+      id: `my-loc-${Date.now()}`,
+      coord: location.coord,
+      label: 'Current location',
+    };
+    setCustomAnchors((prev) => {
+      if (prev.length > 0 && prev[0].id.startsWith('my-loc-')) {
+        return [locAnchor, ...prev.slice(1)];
+      }
+      return [locAnchor, ...prev];
+    });
+    sendCamera({ center: location.coord, zoom: 17.4, pitch: 48 });
+  }, [userLocation, requestUserLocation, sendCamera]);
+
+  const handleUndoCustomAnchor = useCallback(() => {
+    setCustomAnchors((prev) => prev.slice(0, -1));
+  }, []);
+
+  const handleReverseCustomAnchors = useCallback(() => {
+    setCustomAnchors((prev) => prev.slice().reverse());
+  }, []);
+
+  const handleCloseCustomLoop = useCallback(() => {
+    setCustomAnchors((prev) => {
+      if (prev.length < 2) return prev;
+      const first = prev[0];
+      const last = prev[prev.length - 1];
+      if (distMeters(first.coord, last.coord) < 8) {
+        setLocationNotice('Route already closes back to the start');
+        return prev;
+      }
+      customAnchorSeqRef.current += 1;
+      return [
+        ...prev,
+        {
+          id: `loop-end-${customAnchorSeqRef.current}`,
+          coord: first.coord,
+          label: `${first.label} (Loop)`,
+        },
+      ];
+    });
+  }, []);
+
+  const handleClearCustomRoute = useCallback(() => {
+    setCustomAnchors([]);
+    setCustomRouteName('');
+  }, []);
 
   const handlePickCoordinate = useCallback(
     (coord: [number, number], labelHint?: string) => {
@@ -1381,9 +1915,12 @@ export function App() {
   const hasInspectorSelection = Boolean(activeFaculty || activeBuilding || activeRoom || activePoi);
   const inspectorOpen = activePanel === 'inspector' && hasInspectorSelection;
   const hasLeftSheet = inspectorOpen || savedSheetOpen || layersOpen;
-  const floorOffset = directionsOpen || hasLeftSheet ? 524 : 104;
+  const floorOffset = directionsOpen || drawOpen || hasLeftSheet ? 524 : 104;
 
   const openDirections = useCallback(() => {
+    setOverviewActive(false);
+    setOverviewSimulating(false);
+    setActiveRouteSource('directions');
     setActivePanel('directions');
     setPickTarget(null);
     if (!destItem && (activeRoom || activeBuilding || activeFaculty || activePoi)) {
@@ -1440,7 +1977,7 @@ export function App() {
   }, [userLocation, requestUserLocation]);
 
   const bannerInfo = useMemo(() => {
-    if (navActive || directionsOpen || layersOpen || savedSheetOpen) return null;
+    if (navActive || overviewActive || directionsOpen || drawOpen || layersOpen || savedSheetOpen) return null;
     if (activeRoom) {
       return {
         code: activeFaculty?.code ?? 'RM',
@@ -1471,27 +2008,60 @@ export function App() {
       return { code: undefined, accent: undefined, title: activePoi.title, subtitle: activePoi.subtitle };
     }
     return null;
-  }, [navActive, directionsOpen, layersOpen, savedSheetOpen, activeRoom, activeBuilding, activeFaculty, activePoi]);
+  }, [navActive, overviewActive, directionsOpen, drawOpen, layersOpen, savedSheetOpen, activeRoom, activeBuilding, activeFaculty, activePoi]);
 
   const highlightedTransitRoute = useMemo(() => {
     if (!highlightedTransitId) return null;
     return transitData.routes.find((r) => r.id === highlightedTransitId) ?? null;
   }, [highlightedTransitId, transitData.routes]);
 
-  const isMapBusy = directionsOpen || navActive;
-  const showMobileSheet = !navActive && (hasLeftSheet || directionsOpen);
+  const isMapBusy = directionsOpen || drawOpen || overviewActive || navActive;
+  const showMobileSheet = !navActive && !overviewActive && (hasLeftSheet || directionsOpen || drawOpen);
+  const showRouteOnMap = directionsOpen || drawOpen || overviewActive || navActive;
+  const mapOriginCoord = useMemo<[number, number] | null>(() => {
+    if (!showRouteOnMap) return null;
+    if (activeRouteSource === 'custom') {
+      return activeDisplayRoute?.coordinates[0] ?? customAnchors[0]?.coord ?? null;
+    }
+    return activeDisplayRoute?.coordinates[0] ?? originItem?.center ?? null;
+  }, [showRouteOnMap, activeRouteSource, activeDisplayRoute, customAnchors, originItem]);
+
+  const mapDestCoord = useMemo<[number, number] | null>(() => {
+    if (!showRouteOnMap) return null;
+    if (activeRouteSource === 'custom') {
+      if (activeDisplayRoute && activeDisplayRoute.coordinates.length >= 2) {
+        return activeDisplayRoute.coordinates[activeDisplayRoute.coordinates.length - 1];
+      }
+      return customAnchors.length >= 2 ? customAnchors[customAnchors.length - 1].coord : null;
+    }
+    return destItem?.center ?? null;
+  }, [showRouteOnMap, activeRouteSource, activeDisplayRoute, customAnchors, destItem]);
+
+  const activeTurnStepIndex = navActive
+    ? liveNavState.stepIndex
+    : overviewActive
+      ? overviewSimulating
+        ? overviewSimState.stepIndex
+        : overviewStepIndex
+      : -1;
+
+  const puckActive = navActive || (overviewActive && overviewSimulating);
+  const puckCoord = navActive ? liveNavState.coord : overviewSimState.coord;
+  const puckHeading = navActive ? liveNavState.heading : overviewSimState.heading;
+  const puckFollow = navActive ? navFollow : overviewFollow;
+
   const currentSpeedMps =
     navActive && !liveNavState.arrived
       ? navSimulating
         ? navPaused
           ? 0
-          : SIM_SPEED_MPS[routeMode] * navSimSpeed
+          : SIM_SPEED_MPS[activeDisplayMode] * navSimSpeed
         : liveGpsSpeed ?? 0
       : 0;
 
   return (
     <div
-      className={`app-shell${hasLeftSheet || directionsOpen ? ' has-left-sheet' : ''}${
+      className={`app-shell${hasLeftSheet || directionsOpen || drawOpen ? ' has-left-sheet' : ''}${
         showMobileSheet ? ' has-mobile-sheet' : ''
       }`}
     >
@@ -1512,19 +2082,28 @@ export function App() {
         darkMode={darkMode}
         highlightedTransitId={highlightedTransitId}
         visibility={visibility}
-        userLocation={navActive ? null : userLocation}
-        route={directionsOpen || navActive ? computedRoute : null}
-        originCoord={directionsOpen || navActive ? originItem?.center ?? null : null}
-        destCoord={directionsOpen || navActive ? destItem?.center ?? null : null}
-        stopWaypoints={directionsOpen || navActive ? stopWaypoints : []}
+        userLocation={puckActive ? null : userLocation}
+        route={showRouteOnMap ? activeDisplayRoute : null}
+        originCoord={mapOriginCoord}
+        destCoord={mapDestCoord}
+        stopWaypoints={showRouteOnMap ? activeDisplayWaypoints : []}
         pickTarget={pickTarget}
         cameraCmd={cameraCmd}
-        liveNavActive={navActive}
-        liveNavCoord={liveNavState.coord}
-        liveNavHeading={liveNavState.heading}
-        liveNavFollow={navFollow}
+        liveNavActive={puckActive}
+        liveNavCoord={puckCoord}
+        liveNavHeading={puckHeading}
+        liveNavFollow={puckFollow}
+        activeTurnStepIndex={activeTurnStepIndex}
+        drawMode={drawOpen && !navActive && !overviewActive}
+        customAnchors={drawOpen && !navActive && !overviewActive ? customAnchors : []}
+        mapCanvasRef={mapCanvasRef}
+        onAddDrawAnchor={handleAddDrawAnchor}
+        onMoveDrawAnchor={handleMoveDrawAnchor}
+        onRemoveDrawAnchor={handleRemoveDrawAnchor}
+        onCommitRouteDrag={handleCommitRouteDrag}
         onUserMapDrag={() => {
           if (navActive) setNavFollow(false);
+          if (overviewActive && overviewSimulating) setOverviewFollow(false);
         }}
         onSelectFaculty={selectFaculty}
         onSelectBuilding={selectBuilding}
@@ -1547,6 +2126,7 @@ export function App() {
               if (activePanel !== 'none' && activePanel !== 'inspector') {
                 setActivePanel('none');
               }
+              setOverviewActive(false);
               setSearchFocusSignal((v) => v + 1);
             }}
             disabled={isMapBusy}
@@ -1560,7 +2140,10 @@ export function App() {
           <button
             type="button"
             className={`rail-item${zoneDirectoryOpen ? ' is-active' : ''}`}
-            onClick={() => togglePanel('explore')}
+            onClick={() => {
+              setOverviewActive(false);
+              togglePanel('explore');
+            }}
             aria-label="Explore campus zones"
             disabled={navActive}
           >
@@ -1572,7 +2155,10 @@ export function App() {
           <button
             type="button"
             className={`rail-item${transitHubOpen || Boolean(highlightedTransitId) ? ' is-active' : ''}`}
-            onClick={() => togglePanel('transit')}
+            onClick={() => {
+              setOverviewActive(false);
+              togglePanel('transit');
+            }}
             aria-label="Campus transit and shuttle lines"
             disabled={navActive}
           >
@@ -1584,7 +2170,10 @@ export function App() {
           <button
             type="button"
             className={`rail-item${savedSheetOpen ? ' is-active' : ''}`}
-            onClick={() => togglePanel('saved')}
+            onClick={() => {
+              setOverviewActive(false);
+              togglePanel('saved');
+            }}
             aria-label="Saved places and recent history"
             disabled={navActive}
           >
@@ -1613,8 +2202,23 @@ export function App() {
           </button>
           <button
             type="button"
+            className={`rail-item${drawOpen ? ' is-active' : ''}`}
+            onClick={handleOpenDraw}
+            aria-label="Draw custom route"
+            disabled={navActive}
+          >
+            <span className="rail-item__icon">
+              <Icon name="draw" size={19} />
+            </span>
+            <span className="rail-item__label">Draw</span>
+          </button>
+          <button
+            type="button"
             className={`rail-item${layersOpen ? ' is-active' : ''}`}
-            onClick={() => togglePanel('layers')}
+            onClick={() => {
+              setOverviewActive(false);
+              togglePanel('layers');
+            }}
             aria-label="Map layers"
             disabled={navActive}
           >
@@ -1674,7 +2278,7 @@ export function App() {
 
       <SearchBar
         items={searchItems}
-        directionsOpen={directionsOpen}
+        directionsOpen={directionsOpen || drawOpen || overviewActive}
         navActive={navActive}
         activeChip={activeChip}
         savedKeys={savedKeys}
@@ -1800,6 +2404,7 @@ export function App() {
       <DirectionsPanel
         open={directionsOpen}
         navActive={navActive}
+        overviewActive={overviewActive}
         items={searchItems}
         origin={originItem}
         stops={routeStops}
@@ -1807,15 +2412,24 @@ export function App() {
         mode={routeMode}
         stepFree={stepFree}
         route={computedRoute}
+        routeName={routeName}
         elevationProfile={routeElevationProfile}
         weather={campusWeather}
         modeComparison={modeComparison}
         pickTarget={pickTarget}
         hasUserLocation={Boolean(userLocation)}
+        canStartLiveNav={canStartDirectionsNav}
         locating={locating}
         onUseCurrentLocation={handleUseCurrentLocation}
-        onSetOrigin={setOriginItem}
-        onSetDestination={setDestItem}
+        onSetOrigin={(it) => {
+          setActiveRouteSource('directions');
+          setOriginItem(it);
+        }}
+        onSetDestination={(it) => {
+          setActiveRouteSource('directions');
+          setDestItem(it);
+        }}
+        onChangeRouteName={setRouteName}
         onAddStop={handleAddStop}
         onUpdateStop={handleUpdateStop}
         onRemoveStop={handleRemoveStop}
@@ -1848,8 +2462,9 @@ export function App() {
             return t;
           })
         }
-        onStartNavigation={handleStartNavigation}
-        onShareRoute={handleShareRoute}
+        onStartNavigation={() => handleStartNavigationForSource('directions')}
+        onOpenOverview={() => handleOpenOverview('directions')}
+        onOpenShareModal={() => handleOpenShareModal('directions')}
         onSelectStep={handleSelectStep}
         onFocusCoord={(coord) => {
           sendCamera({ center: coord, zoom: 17.8, pitch: 52 });
@@ -1857,11 +2472,91 @@ export function App() {
         onClose={closeActivePanel}
       />
 
-      {navActive && computedRoute && (
+      <CustomRoutePanel
+        open={drawOpen}
+        navActive={navActive}
+        overviewActive={overviewActive}
+        anchors={customAnchors}
+        mode={customMode}
+        snapToGraph={customSnap}
+        routeName={customRouteName}
+        route={customComputedRoute}
+        elevationProfile={customElevationProfile}
+        canStartLiveNav={canStartCustomNav}
+        hasUserLocation={Boolean(userLocation)}
+        locating={locating}
+        onChangeName={setCustomRouteName}
+        onChangeMode={setCustomMode}
+        onToggleSnap={setCustomSnap}
+        onStartFromMyLocation={() => {
+          void handleStartCustomFromMyLocation();
+        }}
+        onUndo={handleUndoCustomAnchor}
+        onReverse={handleReverseCustomAnchors}
+        onCloseLoop={handleCloseCustomLoop}
+        onClear={handleClearCustomRoute}
+        onRemoveAnchor={handleRemoveDrawAnchor}
+        onFocusCoord={(coord) => {
+          sendCamera({ center: coord, zoom: 18.0, pitch: 50 });
+        }}
+        onOpenOverview={() => handleOpenOverview('custom')}
+        onStartNavigation={() => handleStartNavigationForSource('custom')}
+        onOpenShareModal={() => handleOpenShareModal('custom')}
+        onClose={closeActivePanel}
+      />
+
+      {overviewActive && !navActive && activeDisplayRoute && (
+        <RouteOverviewBar
+          route={activeDisplayRoute}
+          routeName={activeDisplayName}
+          elevationProfile={activeElevationProfile}
+          stepIndex={overviewSimulating ? overviewSimState.stepIndex : overviewStepIndex}
+          simulating={overviewSimulating}
+          paused={overviewPaused}
+          simSpeed={overviewSimSpeed}
+          progressFraction={overviewSimState.progressFraction}
+          totalGeomM={routeMetrics.totalGeomM}
+          canStartLiveNav={canStartActiveNav}
+          onPrevStep={() => handleJumpOverviewStep(overviewStepIndex - 1)}
+          onNextStep={() => handleJumpOverviewStep(overviewStepIndex + 1)}
+          onFitRoute={() => {
+            setOverviewSimulating(false);
+            setOverviewPaused(false);
+            fitActiveRouteOverview(activeDisplayRoute);
+          }}
+          onToggleSim={() => {
+            if (overviewSimulating) {
+              setOverviewSimulating(false);
+              setOverviewPaused(false);
+              fitActiveRouteOverview(activeDisplayRoute);
+            } else {
+              setOverviewProgressM(0);
+              setOverviewPaused(false);
+              setOverviewFollow(true);
+              setOverviewSimulating(true);
+            }
+          }}
+          onTogglePause={() => setOverviewPaused((v) => !v)}
+          onToggleSpeed={() => setOverviewSimSpeed((s) => (s === 1 ? 3 : 1))}
+          onScrubProgressM={(meters) => {
+            if (!overviewSimulating) setOverviewSimulating(true);
+            setOverviewProgressM(meters);
+          }}
+          onStartLiveNav={() => handleStartNavigationForSource(activeRouteSource)}
+          onOpenShare={() => handleOpenShareModal(activeRouteSource)}
+          onClose={handleCloseOverview}
+        />
+      )}
+
+      {navActive && activeDisplayRoute && (
         <LiveNavHud
-          route={computedRoute}
-          mode={routeMode}
-          destinationName={destItem?.title ?? 'Destination'}
+          route={activeDisplayRoute}
+          mode={activeDisplayMode}
+          destinationName={
+            activeRouteSource === 'custom'
+              ? customRouteName.trim() || activeDisplayRoute.destLabel
+              : destItem?.title ?? 'Destination'
+          }
           currentStepIndex={liveNavState.stepIndex}
           distanceToNextStepM={liveNavState.distanceToNextStepM}
           remainingDistanceM={liveNavState.remainingDistanceM}
@@ -1876,6 +2571,8 @@ export function App() {
           gpsError={gpsError}
           arrived={liveNavState.arrived}
           speedMps={currentSpeedMps}
+          currentCoord={liveNavState.coord}
+          rerouteState={rerouteState}
           currentZone={currentNavZone}
           zoneTransition={zoneTransition}
           currentElevationM={liveNavElevationM}
@@ -1897,6 +2594,26 @@ export function App() {
           onExit={handleExitNavigation}
         />
       )}
+
+      <ShareRouteModal
+        open={shareModalOpen}
+        route={activeDisplayRoute}
+        elevationProfile={activeElevationProfile}
+        waypoints={activeDisplayWaypoints}
+        routeName={activeDisplayName}
+        shareUrl={currentShareUrl}
+        darkMode={darkMode}
+        getMapCanvas={getMapCanvas}
+        onChangeRouteName={(name) => {
+          if (activeRouteSource === 'custom') {
+            setCustomRouteName(name);
+          } else {
+            setRouteName(name);
+          }
+        }}
+        onNotify={(msg) => setLocationNotice(msg)}
+        onClose={() => setShareModalOpen(false)}
+      />
 
       <FloorControls
         building={activeBuilding}
@@ -2010,12 +2727,24 @@ export function App() {
           disabled={navActive}
         >
           <Icon name="directions" size={20} />
-          Directions
+          Routes
+        </button>
+        <button
+          type="button"
+          className={`mobile-bar__item${drawOpen ? ' is-active' : ''}`}
+          onClick={handleOpenDraw}
+          disabled={navActive}
+        >
+          <Icon name="draw" size={20} />
+          Draw
         </button>
         <button
           type="button"
           className={`mobile-bar__item${layersOpen ? ' is-active' : ''}`}
-          onClick={() => togglePanel('layers')}
+          onClick={() => {
+            setOverviewActive(false);
+            togglePanel('layers');
+          }}
           disabled={navActive}
         >
           <Icon name="layers" size={20} />

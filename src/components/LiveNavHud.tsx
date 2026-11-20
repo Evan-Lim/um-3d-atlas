@@ -1,6 +1,7 @@
 import type { FC } from 'react';
 import { Icon, type IconName } from './Icon';
 import { zoneKindLabel } from '../theme';
+import { formatGpsCoords } from '../utils/routeTools';
 import type {
   CampusWeatherReport,
   ComputedRoute,
@@ -28,6 +29,8 @@ interface LiveNavHudProps {
   gpsError: string | null;
   arrived: boolean;
   speedMps: number;
+  currentCoord: [number, number] | null;
+  rerouteState: 'idle' | 'rerouting' | 'updated';
   currentZone: FacultyProps | null;
   zoneTransition: ZoneTransitionEvent | null;
   currentElevationM: number | null;
@@ -122,6 +125,8 @@ export const LiveNavHud: FC<LiveNavHudProps> = ({
   gpsError,
   arrived,
   speedMps,
+  currentCoord,
+  rerouteState,
   currentZone,
   zoneTransition,
   currentElevationM,
@@ -247,6 +252,21 @@ export const LiveNavHud: FC<LiveNavHudProps> = ({
                   <span className="m3-mono">
                     {weather.rainLevel === 'raining' ? 'Raining' : `${weather.rainChancePct}% rain`}
                   </span>
+                </span>
+              </>
+            )}
+          </div>
+        )}
+
+        {currentCoord && (
+          <div className="nav-hud__coords m3-mono" aria-label="Current GPS coordinates">
+            <Icon name="crosshair" size={11} />
+            <span>{formatGpsCoords(currentCoord)}</span>
+            {rerouteState !== 'idle' && (
+              <>
+                <span className="nav-hud__zone-sep" aria-hidden="true">·</span>
+                <span className="nav-hud__reroute-note">
+                  {rerouteState === 'rerouting' ? 'Rerouting…' : 'Route recalculated'}
                 </span>
               </>
             )}

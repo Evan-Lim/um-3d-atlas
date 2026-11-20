@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
 import maplibregl, {
   type GeoJSONSource,
   type LngLatBoundsLike,
@@ -8,6 +8,7 @@ import maplibregl, {
 import type {
   BuildingProps,
   ComputedRoute,
+  CustomRouteAnchor,
   FacultyProps,
   MapLayerVisibility,
   PickTarget,
@@ -16,6 +17,7 @@ import type {
   UserLocation,
 } from '../types/map';
 import { zoneAccent } from '../theme';
+import { extractTurnArrows, projectPointOntoPolyline } from '../utils/routeTools';
 
 export interface UmContextBundle {
   roads: GeoJSON.FeatureCollection;
@@ -62,6 +64,14 @@ interface UmMapCanvasProps {
   liveNavCoord: [number, number] | null;
   liveNavHeading: number;
   liveNavFollow: boolean;
+  activeTurnStepIndex?: number;
+  drawMode?: boolean;
+  customAnchors?: CustomRouteAnchor[];
+  mapCanvasRef?: MutableRefObject<HTMLCanvasElement | null>;
+  onAddDrawAnchor?: (coord: [number, number], labelHint?: string) => void;
+  onMoveDrawAnchor?: (id: string, coord: [number, number]) => void;
+  onRemoveDrawAnchor?: (id: string) => void;
+  onCommitRouteDrag?: (grabCoord: [number, number], dropCoord: [number, number]) => void;
   onUserMapDrag: () => void;
   onSelectFaculty: (f: FacultyProps) => void;
   onSelectBuilding: (b: BuildingProps) => void;
@@ -240,6 +250,41 @@ function registerMapIcons(map: maplibregl.Map) {
       map.addImage('icon-route-arrow', { width: px, height: px, data: imgData.data }, { pixelRatio: scale });
     }
   }
+
+  // Google Maps-style road-painted turning arrowheads (pointing North / 0° so icon-rotate aligns with bearing)
+  const addTurnHead = (name: string, size: number, fill: string, stroke: string) => {
+    if (map.hasImage(name)) return;
+    const scale = 2;
+    const px = size * scale;
+    const canvas = document.createElement('canvas');
+    canvas.width = px;
+    canvas.height = px;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.scale(scale, scale);
+
+    const cx = size / 2;
+    ctx.beginPath();
+    ctx.moveTo(cx, 2.2);
+    ctx.lineTo(size - 3.2, size - 4.2);
+    ctx.lineTo(cx, size - 8.2);
+    ctx.lineTo(3.2, size - 4.2);
+    ctx.closePath();
+
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = 3.2;
+    ctx.strokeStyle = stroke;
+    ctx.stroke();
+
+    ctx.fillStyle = fill;
+    ctx.fill();
+
+    const imgData = ctx.getImageData(0, 0, px, px);
+    map.addImage(name, { width: px, height: px, data: imgData.data }, { pixelRatio: scale });
+  };
+
+  addTurnHead('icon-turn-head', 22, '#ffffff', '#173a70');
+  addTurnHead('icon-turn-head-next', 28, '#ffffff', '#0f2d5e');
 }
 
 /**
@@ -429,6 +474,9 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
     liveNavCoord,
     liveNavHeading,
     liveNavFollow,
+    activeTurnStepIndex = -1,
+    drawMode = false,
+    customAnchors = [],
   } = props;
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -439,6 +487,13 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
   const originMarkerRef = useRef<maplibregl.Marker | null>(null);
   const destMarkerRef = useRef<maplibregl.Marker | null>(null);
   const stopMarkersRef = useRef<maplibregl.Marker[]>([]);
+  const customAnchorMarkersRef = useRef<maplibregl.Marker[]>([]);
+  const dragHandleMarkerRef = useRef<maplibregl.Marker | null>(null);
+  const routeDragStateRef = useRef<{
+    active: boolean;
+    hoverCoord: [number, number] | null;
+    grabCoord: [number, number] | null;
+  }>({ active: false, hoverCoord: null, grabCoord: null });
   const liveNavMarkerRef = useRef<maplibregl.Marker | null>(null);
   const userMarkerRef = useRef<maplibregl.Marker | null>(null);
   const coneElRef = useRef<HTMLDivElement | null>(null);
@@ -467,6 +522,11 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
       })),
     };
   }, [route]);
+
+  const turnArrows = useMemo(
+    () => extractTurnArrows(route, activeTurnStepIndex),
+    [route, activeTurnStepIndex],
+  );
 
   const applyUserLocation = (map: maplibregl.Map, location: UserLocation | null) => {
     const source = map.getSource('um-user-area') as GeoJSONSource | undefined;
@@ -939,9 +999,13 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
       minZoom: 13.4,
       maxZoom: 21,
       attributionControl: false,
+      canvasContextAttributes: { preserveDrawingBuffer: true },
     });
 
     mapRef.current = map;
+    if (latestRef.current.mapCanvasRef) {
+      latestRef.current.mapCanvasRef.current = map.getCanvas();
+    }
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'bottom-right');
     map.addControl(new maplibregl.ScaleControl({ maxWidth: 110, unit: 'metric' }), 'bottom-left');
 
@@ -998,6 +1062,18 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
         data: { type: 'FeatureCollection', features: [] },
       });
       map.addSource('um-route', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+      });
+      map.addSource('um-turn-lines', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+      });
+      map.addSource('um-turn-heads', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+      });
+      map.addSource('um-drag-preview', {
         type: 'geojson',
         data: { type: 'FeatureCollection', features: [] },
       });
@@ -1536,6 +1612,79 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
         },
       });
 
+      // 10b. Google Maps-style road-hugging turning arrows at maneuver corners
+      map.addLayer({
+        id: 'um-turn-arrow-casing',
+        type: 'line',
+        source: 'um-turn-lines',
+        minzoom: 14.2,
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: {
+          'line-color': '#173a70',
+          'line-width': [
+            'interpolate',
+            ['linear'],
+            ['zoom'],
+            14.5,
+            ['case', ['==', ['get', 'isNext'], 1], 6.4, 5.0],
+            18,
+            ['case', ['==', ['get', 'isNext'], 1], 11.4, 8.8],
+          ],
+          'line-opacity': 0.94,
+        },
+      });
+
+      map.addLayer({
+        id: 'um-turn-arrow-shaft',
+        type: 'line',
+        source: 'um-turn-lines',
+        minzoom: 14.2,
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: {
+          'line-color': '#ffffff',
+          'line-width': [
+            'interpolate',
+            ['linear'],
+            ['zoom'],
+            14.5,
+            ['case', ['==', ['get', 'isNext'], 1], 3.4, 2.5],
+            18,
+            ['case', ['==', ['get', 'isNext'], 1], 6.2, 4.6],
+          ],
+          'line-opacity': 1,
+        },
+      });
+
+      map.addLayer({
+        id: 'um-turn-arrow-head',
+        type: 'symbol',
+        source: 'um-turn-heads',
+        minzoom: 14.2,
+        layout: {
+          'icon-image': ['case', ['==', ['get', 'isNext'], 1], 'icon-turn-head-next', 'icon-turn-head'],
+          'icon-size': ['interpolate', ['linear'], ['zoom'], 14.5, 0.56, 17, 0.85, 19, 1.05],
+          'icon-rotate': ['get', 'bearing'],
+          'icon-rotation-alignment': 'map',
+          'icon-pitch-alignment': 'map',
+          'icon-allow-overlap': true,
+          'icon-ignore-placement': true,
+        },
+      });
+
+      // 10c. Desktop drag-to-snap live rubber-band preview line
+      map.addLayer({
+        id: 'um-drag-preview-line',
+        type: 'line',
+        source: 'um-drag-preview',
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: {
+          'line-color': '#1a73e8',
+          'line-width': 4,
+          'line-dasharray': [2, 2],
+          'line-opacity': 0.88,
+        },
+      });
+
       // 11. Prominent Bus Stop, Rail Station & Campus Gate Map Badges
       map.addLayer({
         id: 'um-pois-icon',
@@ -1762,9 +1911,112 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
       'um-faculties-fill',
     ];
 
+    const clearDragHandle = () => {
+      dragHandleMarkerRef.current?.remove();
+      dragHandleMarkerRef.current = null;
+      routeDragStateRef.current.hoverCoord = null;
+    };
+
+    const setDragPreview = (a: [number, number] | null, b: [number, number] | null) => {
+      const src = map.getSource('um-drag-preview') as GeoJSONSource | undefined;
+      if (!src) return;
+      if (!a || !b) {
+        src.setData({ type: 'FeatureCollection', features: [] });
+        return;
+      }
+      src.setData({
+        type: 'FeatureCollection',
+        features: [
+          {
+            type: 'Feature',
+            properties: {},
+            geometry: { type: 'LineString', coordinates: [a, b] },
+          },
+        ],
+      });
+    };
+
+    map.on('mousedown', (e) => {
+      if (!readyRef.current || e.originalEvent.button !== 0) return;
+      const cur = latestRef.current;
+      if (!cur.drawMode || !routeDragStateRef.current.hoverCoord) return;
+
+      e.preventDefault();
+      map.dragPan.disable();
+      routeDragStateRef.current.active = true;
+      routeDragStateRef.current.grabCoord = routeDragStateRef.current.hoverCoord;
+      map.getCanvas().style.cursor = 'grabbing';
+      setDragPreview(routeDragStateRef.current.grabCoord, [e.lngLat.lng, e.lngLat.lat]);
+    });
+
+    map.on('mouseup', (e) => {
+      if (!routeDragStateRef.current.active) return;
+      const grab = routeDragStateRef.current.grabCoord;
+      routeDragStateRef.current.active = false;
+      routeDragStateRef.current.grabCoord = null;
+      map.dragPan.enable();
+      setDragPreview(null, null);
+      clearDragHandle();
+      map.getCanvas().style.cursor = latestRef.current.drawMode ? 'crosshair' : '';
+
+      if (grab && latestRef.current.onCommitRouteDrag) {
+        latestRef.current.onCommitRouteDrag(grab, [e.lngLat.lng, e.lngLat.lat]);
+      }
+    });
+
     map.on('mousemove', (e) => {
       if (!readyRef.current) return;
-      if (latestRef.current.pickTarget) {
+      const cur = latestRef.current;
+
+      if (routeDragStateRef.current.active && routeDragStateRef.current.grabCoord) {
+        const dropCoord: [number, number] = [e.lngLat.lng, e.lngLat.lat];
+        setDragPreview(routeDragStateRef.current.grabCoord, dropCoord);
+        dragHandleMarkerRef.current?.setLngLat(dropCoord);
+        map.getCanvas().style.cursor = 'grabbing';
+        hoverPopup.remove();
+        return;
+      }
+
+      if (cur.drawMode) {
+        hoverPopup.remove();
+        // Desktop drag-to-snap handle when hovering near the active custom route line
+        if (cur.route && cur.route.coordinates.length >= 2 && map.getLayer('um-route-line')) {
+          const pad = 12;
+          const hits = map.queryRenderedFeatures(
+            [
+              [e.point.x - pad, e.point.y - pad],
+              [e.point.x + pad, e.point.y + pad],
+            ],
+            { layers: ['um-route-line'] },
+          );
+          if (hits.length > 0) {
+            const proj = projectPointOntoPolyline([e.lngLat.lng, e.lngLat.lat], cur.route.coordinates);
+            routeDragStateRef.current.hoverCoord = proj.closestCoord;
+            if (!dragHandleMarkerRef.current) {
+              const handleEl = document.createElement('div');
+              handleEl.className = 'route-drag-handle';
+              handleEl.title = 'Drag to snap route onto another road or path';
+              dragHandleMarkerRef.current = new maplibregl.Marker({
+                element: handleEl,
+                anchor: 'center',
+              })
+                .setLngLat(proj.closestCoord)
+                .addTo(map);
+            } else {
+              dragHandleMarkerRef.current.setLngLat(proj.closestCoord);
+            }
+            map.getCanvas().style.cursor = 'grab';
+            return;
+          }
+        }
+        clearDragHandle();
+        map.getCanvas().style.cursor = 'crosshair';
+        return;
+      }
+
+      clearDragHandle();
+
+      if (cur.pickTarget) {
         map.getCanvas().style.cursor = 'crosshair';
         hoverPopup.remove();
         return;
@@ -1876,12 +2128,31 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
 
     map.on('mouseleave', () => {
       hoverPopup.remove();
+      if (!routeDragStateRef.current.active) {
+        clearDragHandle();
+      }
     });
 
     // Click selection handler
     map.on('click', (e) => {
       if (!readyRef.current) return;
       const cur = latestRef.current;
+
+      if (cur.drawMode && cur.onAddDrawAnchor) {
+        const clickable = [
+          'um-rooms-3d',
+          'um-pois-icon',
+          'um-pois-label',
+          'um-buildings-3d',
+          'um-building-focus-shell',
+          'um-buildings-label',
+          'um-faculties-label',
+        ].filter((id) => Boolean(map.getLayer(id)));
+        const hits = map.queryRenderedFeatures(e.point, { layers: clickable });
+        const hitName = hits.length > 0 ? String((hits[0].properties as Record<string, unknown>)?.name ?? '') : '';
+        cur.onAddDrawAnchor([e.lngLat.lng, e.lngLat.lat], hitName || undefined);
+        return;
+      }
 
       if (cur.pickTarget) {
         const clickable = [
@@ -1939,9 +2210,15 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
       destMarkerRef.current?.remove();
       for (const m of stopMarkersRef.current) m.remove();
       stopMarkersRef.current = [];
+      for (const m of customAnchorMarkersRef.current) m.remove();
+      customAnchorMarkersRef.current = [];
+      clearDragHandle();
       liveNavMarkerRef.current?.remove();
       userMarkerRef.current?.remove();
       hoverPopup.remove();
+      if (latestRef.current.mapCanvasRef) {
+        latestRef.current.mapCanvasRef.current = null;
+      }
       map.remove();
       mapRef.current = null;
       readyRef.current = false;
@@ -1974,7 +2251,7 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
     mapReadySeq,
   ]);
 
-  // Sync active route line & A / 1..N / B pins
+  // Sync active route line, road turning arrows & A / 1..N / B pins (or draggable custom anchors)
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !readyRef.current) return;
@@ -1984,33 +2261,73 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
       src.setData(routeGeoJson);
     }
 
+    (map.getSource('um-turn-lines') as GeoJSONSource | undefined)?.setData(turnArrows.lines);
+    (map.getSource('um-turn-heads') as GeoJSONSource | undefined)?.setData(turnArrows.heads);
+
     originMarkerRef.current?.remove();
     destMarkerRef.current?.remove();
     for (const m of stopMarkersRef.current) m.remove();
+    for (const m of customAnchorMarkersRef.current) m.remove();
     originMarkerRef.current = null;
     destMarkerRef.current = null;
     stopMarkersRef.current = [];
+    customAnchorMarkersRef.current = [];
 
-    const makePin = (letter: 'A' | 'B', bg: string) => {
+    const makePin = (letter: string, bg: string, draggable = false) => {
       const wrap = document.createElement('div');
       wrap.style.cssText =
         `width:26px;height:26px;border-radius:999px;background:${bg};color:#fff;` +
         'font-family:var(--font-sans);font-size:11.5px;font-weight:500;display:grid;place-items:center;' +
-        'border:2.5px solid #fff;box-shadow:0 2px 8px rgba(32,33,36,0.34);';
+        `border:2.5px solid #fff;box-shadow:0 2px 8px rgba(32,33,36,0.34);${draggable ? 'cursor:grab;' : ''}`;
       wrap.textContent = letter;
       return wrap;
     };
 
-    const makeStopPin = (num: number, label: string) => {
+    const makeStopPin = (num: number, label: string, draggable = false, isShaping = false) => {
       const wrap = document.createElement('div');
-      wrap.title = `Stop ${num}: ${label}`;
-      wrap.style.cssText =
-        'width:24px;height:24px;border-radius:999px;background:#ffffff;color:#1a73e8;' +
-        'font-family:var(--font-mono);font-size:11px;font-weight:600;display:grid;place-items:center;' +
-        'border:2.5px solid #1a73e8;box-shadow:0 2px 7px rgba(32,33,36,0.3);';
-      wrap.textContent = String(num);
+      wrap.title = draggable
+        ? `${label} · Drag to move · Right-click to remove`
+        : `Stop ${num}: ${label}`;
+      if (isShaping) {
+        wrap.style.cssText =
+          'width:16px;height:16px;border-radius:999px;background:#ffffff;' +
+          'border:3px solid #1a73e8;box-shadow:0 2px 6px rgba(32,33,36,0.32);cursor:grab;';
+      } else {
+        wrap.style.cssText =
+          'width:24px;height:24px;border-radius:999px;background:#ffffff;color:#1a73e8;' +
+          'font-family:var(--font-mono);font-size:11px;font-weight:600;display:grid;place-items:center;' +
+          `border:2.5px solid #1a73e8;box-shadow:0 2px 7px rgba(32,33,36,0.3);${draggable ? 'cursor:grab;' : ''}`;
+        wrap.textContent = String(num);
+      }
       return wrap;
     };
+
+    if (drawMode && customAnchors.length > 0) {
+      customAnchors.forEach((anchor, idx) => {
+        const isFirst = idx === 0;
+        const isLast = idx === customAnchors.length - 1 && customAnchors.length > 1;
+        const el = isFirst
+          ? makePin('A', '#1a73e8', true)
+          : isLast
+            ? makePin('B', '#d93025', true)
+            : makeStopPin(idx, anchor.label || `Point ${idx + 1}`, true, Boolean(anchor.isShapingPoint));
+        el.title = `${anchor.label || `Point ${idx + 1}`} · Drag to move · Right-click to remove`;
+        el.addEventListener('contextmenu', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          latestRef.current.onRemoveDrawAnchor?.(anchor.id);
+        });
+        const marker = new maplibregl.Marker({ element: el, draggable: true })
+          .setLngLat(anchor.coord)
+          .addTo(map);
+        marker.on('dragend', () => {
+          const ll = marker.getLngLat();
+          latestRef.current.onMoveDrawAnchor?.(anchor.id, [ll.lng, ll.lat]);
+        });
+        customAnchorMarkersRef.current.push(marker);
+      });
+      return;
+    }
 
     if (originCoord) {
       originMarkerRef.current = new maplibregl.Marker({ element: makePin('A', '#1a73e8') })
@@ -2028,7 +2345,7 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
         .setLngLat(destCoord)
         .addTo(map);
     }
-  }, [routeGeoJson, originCoord, destCoord, stopWaypoints, mapReadySeq]);
+  }, [routeGeoJson, turnArrows, originCoord, destCoord, stopWaypoints, drawMode, customAnchors, mapReadySeq]);
 
   // Respond to explicit 3D/2D pitch toggle
   useEffect(() => {
@@ -2138,14 +2455,18 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
-      {pickTarget && (
+      {(pickTarget || drawMode) && (
         <div className="pick-hint">
           <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: 999, background: 'var(--primary)' }} />
-          {pickTarget === 'origin'
-            ? 'Select a starting point'
-            : pickTarget === 'destination'
-              ? 'Select a destination'
-              : 'Select a stop on the map'}
+          {drawMode
+            ? customAnchors.length < 2
+              ? 'Click the map to add route points'
+              : 'Click to extend · Drag pins or drag the route line to snap'
+            : pickTarget === 'origin'
+              ? 'Select a starting point'
+              : pickTarget === 'destination'
+                ? 'Select a destination'
+                : 'Select a stop on the map'}
         </div>
       )}
     </div>

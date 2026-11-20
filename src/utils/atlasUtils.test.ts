@@ -31,13 +31,28 @@ import {
   parseOpenMeteoForecast,
   predictPrecipitation,
 } from './weatherUtils';
+import {
+  computeCustomRoute,
+  decodeCustomAnchors,
+  encodeCustomAnchors,
+  extractTurnArrows,
+  filterRemainingStops,
+  findInsertLegIndex,
+  formatGpsCoords,
+  isCoordAtUserLocation,
+  isOriginAtUserLocation,
+  projectPointOntoPolyline,
+  slugifyRouteFilename,
+} from './routeTools';
 import type {
   ComputedRoute,
+  CustomRouteAnchor,
   ElevationGridData,
   FacultyProps,
   GraphData,
   SearchItem,
   TransitRoute,
+  UserLocation,
 } from '../types/map';
 
 const SAMPLE_ROUTES: TransitRoute[] = [
@@ -631,6 +646,149 @@ test('weather comfort predictor classifies heat severity, rain likelihood, Open-
   assert.ok(afternoonEst.feelsLikeC > dawnEst.feelsLikeC + 3);
   assert.ok(afternoonEst.rainChancePct > dawnEst.rainChancePct);
 });
+
+test('Start gating, GPS formatting, polyline projection, and adaptive stop filtering behave accurately', () => {
+  const loc: UserLocation = {
+    coord: [101.65384, 3.12092],
+    accuracy: 8,
+    timestamp: Date.now(),
+  };
+
+  assert.equal(formatGpsCoords(loc.coord), '3.12092°N, 101.65384°E');
+  assert.equal(formatGpsCoords(null), '');
+
+  const myLocOrigin: SearchItem = {
+    id: 'user-location',
+    kind: 'point',
+    title: 'Current location',
+    subtitle: 'Device GPS',
+    keywords: 'gps',
+    center: loc.coord,
+    entrance_node: -1,
+  };
+  const farOrigin = makePoint('FSKTM', 101.6506, 3.1282);
+  const nearOrigin = makePoint('Nearby Gate', 101.6539, 3.12095);
+
+  assert.equal(isOriginAtUserLocation(myLocOrigin, loc), true);
+  assert.equal(isOriginAtUserLocation(nearOrigin, loc), true);
+  assert.equal(isOriginAtUserLocation(farOrigin, loc), false);
+  assert.equal(isOriginAtUserLocation(farOrigin, null), false);
+  assert.equal(isCoordAtUserLocation(nearOrigin.center, loc), true);
+  assert.equal(isCoordAtUserLocation(farOrigin.center, loc), false);
+
+  // Polyline projection (straight line east along lat 3.120)
+  const poly: [number, number][] = [
+    [101.650, 3.120],
+    [101.652, 3.120],
+  ];
+  const onLine = projectPointOntoPolyline([101.651, 3.120], poly);
+  assert.ok(onLine.distanceM < 1);
+  assert.ok(onLine.alongM > 100 && onLine.alongM < 120);
+
+  // ~55m north of line -> triggers off-route detection (>24m / >32m)
+  const offLine = projectPointOntoPolyline([101.651, 3.1205], poly);
+  assert.ok(offLine.distanceM > 45 && offLine.distanceM < 65);
+
+  // Adaptive remaining stop filtering marks stops within 28m as passed
+  const stop1 = makePoint('S1', 101.651, 3.120);
+  const stop2 = makePoint('S2', 101.653, 3.120);
+  const passed = new Set<string>();
+  const f1 = filterRemainingStops([stop1, stop2], passed, [101.65105, 3.12002], 28);
+  assert.deepEqual(f1.newlyPassedIds, ['building:S1']);
+  assert.deepEqual(
+    f1.remaining.map((s) => s.id),
+    ['S2'],
+  );
+});
+
+test('extractTurnArrows detects sharp road bends and flags the upcoming navigation turn', () => {
+  // L-shaped route: east 110m then north 110m (90° left turn at [101.651, 3.120])
+  const route: ComputedRoute = {
+    mode: 'walk',
+    stepFreeUsed: false,
+    coordinates: [
+      [101.650, 3.120],
+      [101.651, 3.120],
+      [101.651, 3.121],
+    ],
+    segments: [],
+    totalDistanceM: 220,
+    estimatedMinutes: 3,
+    shortcutCount: 0,
+    stepsCount: 0,
+    busRoutesUsed: [],
+    steps: [
+      { instruction: 'Head east', detail: 'Road', distanceM: 110, kind: 'road', coord: [101.650, 3.120] },
+      { instruction: 'Turn left north', detail: 'Road', distanceM: 110, kind: 'road', coord: [101.651, 3.120] },
+    ],
+    originLabel: 'A',
+    destLabel: 'B',
+  };
+
+  const arrows = extractTurnArrows(route, 0);
+  assert.equal(arrows.count, 1);
+  assert.equal(arrows.lines.features.length, 1);
+  assert.equal(arrows.heads.features.length, 1);
+  assert.equal((arrows.heads.features[0].properties as Record<string, unknown>).turnDir, 'left');
+  assert.equal((arrows.heads.features[0].properties as Record<string, unknown>).isNext, 1);
+});
+
+test('Custom route computation, drag-to-snap leg insertion, and named/custom share URL round-trip', () => {
+  const miniGraph: GraphData = {
+    nodes: [
+      [101.650, 3.120],
+      [101.651, 3.120],
+      [101.652, 3.120],
+      [101.651, 3.121],
+    ],
+    edges: [
+      [0, 1, 111, 0, 3, 'Lingkungan Budi'],
+      [1, 2, 111, 0, 3, 'Lingkungan Budi'],
+      [1, 3, 110, 1, 2, 'Paved Footpath'],
+      [3, 2, 156, 1, 2, 'Connector'],
+    ],
+  };
+  const router = new CampusRouter(miniGraph);
+  const anchors: CustomRouteAnchor[] = [
+    { id: 'a1', coord: [101.650, 3.120], label: 'Start' },
+    { id: 'a2', coord: [101.651, 3.120], label: 'Mid' },
+    { id: 'a3', coord: [101.652, 3.120], label: 'Finish' },
+  ];
+
+  const snapped = computeCustomRoute(router, anchors, 'walk', true);
+  assert.ok(snapped);
+  assert.equal(snapped.totalDistanceM, 222);
+
+  const freehand = computeCustomRoute(router, anchors, 'bike', false);
+  assert.ok(freehand);
+  assert.equal(freehand.mode, 'bike');
+  assert.equal(freehand.coordinates.length, 3);
+
+  // Dragging near the second leg inserts at leg index 1
+  const legIdx = findInsertLegIndex(snapped, anchors, [101.6515, 3.120]);
+  assert.equal(legIdx, 1);
+
+  // Custom anchor codec + URL share round-trip with custom route name
+  const encoded = encodeCustomAnchors(anchors);
+  const decoded = decodeCustomAnchors(encoded);
+  assert.equal(decoded.length, 3);
+  assert.ok(Math.abs(decoded[1].coord[0] - 101.651) < 1e-4);
+  assert.ok(Math.abs(decoded[1].coord[1] - 3.12) < 1e-4);
+
+  const shareCustom = buildAtlasShareUrl('https://um-atlas.example/', {
+    customEncoded: encoded,
+    customSnap: true,
+    mode: 'bike',
+    routeName: 'Morning Lake Loop',
+  });
+  const parsedCustom = parseAtlasUrlParams(new URL(shareCustom).search);
+  assert.equal(parsedCustom.customEncoded, encoded);
+  assert.equal(parsedCustom.customSnap, true);
+  assert.equal(parsedCustom.mode, 'bike');
+  assert.equal(parsedCustom.routeName, 'Morning Lake Loop');
+  assert.equal(slugifyRouteFilename('Morning Lake Loop!'), 'morning-lake-loop.png');
+});
+
 
 
 

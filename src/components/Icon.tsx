@@ -55,7 +55,17 @@ export type IconName =
   | 'thermometer'
   | 'droplet'
   | 'trendUp'
-  | 'trendDown';
+  | 'trendDown'
+  | 'draw'
+  | 'overview'
+  | 'download'
+  | 'copy'
+  | 'undo'
+  | 'trash'
+  | 'loop'
+  | 'chevronLeft'
+  | 'magnet'
+  | 'image';
 
 const PATHS: Record<IconName, ReactNode> = {
   search: (
@@ -342,6 +352,67 @@ const PATHS: Record<IconName, ReactNode> = {
     <>
       <path d="M4 7 10 13l4-4 6 7" />
       <path d="M15.5 16H20v-4.5" />
+    </>
+  ),
+  draw: (
+    <>
+      <path d="M4 19c2.5-6 6-7 8-3s5.5 3 8-3" />
+      <circle cx="4" cy="19" r="2" />
+      <circle cx="20" cy="13" r="2" />
+      <path d="m14 4 3 3-6.5 6.5H7.5v-3L14 4Z" />
+    </>
+  ),
+  overview: (
+    <>
+      <path d="M3 6.5 9 4l6 2.5L21 4v13.5L15 20l-6-2.5L3 20V6.5Z" />
+      <path d="M9 4v13.5M15 6.5V20" />
+    </>
+  ),
+  download: (
+    <>
+      <path d="M12 4v11M7.5 10.5 12 15l4.5-4.5" />
+      <path d="M4 18.5h16" />
+    </>
+  ),
+  copy: (
+    <>
+      <rect x="9" y="9" width="11" height="11" rx="2" />
+      <path d="M5 15H4a1.5 1.5 0 0 1-1.5-1.5v-9A1.5 1.5 0 0 1 4 3h9a1.5 1.5 0 0 1 1.5 1.5v1" />
+    </>
+  ),
+  undo: (
+    <>
+      <path d="M9 14 4 9l5-5" />
+      <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
+    </>
+  ),
+  trash: (
+    <>
+      <path d="M4 6.5h16M9.5 6.5V4.5a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v2" />
+      <path d="M6.5 6.5 7.5 19a1.5 1.5 0 0 0 1.5 1.5h6a1.5 1.5 0 0 0 1.5-1.5l1-12.5" />
+    </>
+  ),
+  loop: (
+    <>
+      <path d="M17 3.5 20.5 7 17 10.5" />
+      <path d="M4 12a6.5 6.5 0 0 1 6.5-5H20" />
+      <path d="M7 20.5 3.5 17 7 13.5" />
+      <path d="M20 12a6.5 6.5 0 0 1-6.5 5H4" />
+    </>
+  ),
+  chevronLeft: <path d="m14.5 5.5-6.5 6.5 6.5 6.5" />,
+  magnet: (
+    <>
+      <path d="M6 4v7a6 6 0 0 0 12 0V4" />
+      <path d="M4 4h4v3H4zM16 4h4v3h-4z" />
+    </>
+  ),
+  image: (
+    <>
+      <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
+      <circle cx="9" cy="9.5" r="1.5" />
+      <path d="m20.5 15.5-4.5-4.5-6.5 6.5" />
+      <path d="m12.5 14.5-2.5-2.5-5 5" />
     </>
   ),
 };

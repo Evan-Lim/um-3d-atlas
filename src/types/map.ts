@@ -274,3 +274,14 @@ export interface CampusWeatherReport {
   hourlyOutlook: WeatherForecastSlot[];
 }
 
+export interface CustomRouteAnchor {
+  id: string;
+  coord: [number, number];
+  label: string;
+  isShapingPoint?: boolean;
+}
+
+export type RouteExportStyle = 'whole-map' | 'route-only';
+export type RouteOnlyBg = 'transparent' | 'light' | 'dark';
+
+
