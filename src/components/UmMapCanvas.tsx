@@ -18,6 +18,8 @@ import type {
 } from '../types/map';
 import { zoneAccent } from '../theme';
 import { extractTurnArrows, projectPointOntoPolyline } from '../utils/routeTools';
+import { attachCartographicProvenance, getAtlasIdentity } from '../utils/atlasProvenance';
+import { createWebglWatermarkLayer, type WebglWatermarkHandle } from '../utils/webglWatermarkLayer';
 
 export interface UmContextBundle {
   roads: GeoJSON.FeatureCollection;
@@ -497,6 +499,7 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
   const liveNavMarkerRef = useRef<maplibregl.Marker | null>(null);
   const userMarkerRef = useRef<maplibregl.Marker | null>(null);
   const coneElRef = useRef<HTMLDivElement | null>(null);
+  const webglWatermarkRef = useRef<WebglWatermarkHandle | null>(null);
 
   const latestRef = useRef(props);
   latestRef.current = props;
@@ -944,6 +947,19 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
         dark ? 'rgba(24, 29, 38, 0.94)' : 'rgba(255, 255, 255, 0.96)',
       );
     }
+    if (map.getLayer('um-carto-mark-label')) {
+      map.setPaintProperty(
+        'um-carto-mark-label',
+        'text-color',
+        dark ? 'rgba(196, 208, 226, 0.28)' : 'rgba(60, 72, 92, 0.26)',
+      );
+      map.setPaintProperty(
+        'um-carto-mark-label',
+        'text-halo-color',
+        dark ? 'rgba(20, 25, 34, 0.45)' : 'rgba(255, 255, 255, 0.55)',
+      );
+    }
+    webglWatermarkRef.current?.setDarkMode(dark);
 
     // Layer visibility toggles
     const setVis = (ids: string[], on: boolean) => {
@@ -1047,16 +1063,16 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
       // Register crisp high-DPI bus stop, rail station, and campus gate badges
       registerMapIcons(map);
 
-      map.addSource('um-boundary', { type: 'geojson', data: cur.boundary });
-      map.addSource('um-parks', { type: 'geojson', data: cur.context.parks });
-      map.addSource('um-water', { type: 'geojson', data: cur.context.water });
-      map.addSource('um-faculties', { type: 'geojson', data: cur.faculties });
-      map.addSource('um-roads', { type: 'geojson', data: cur.context.roads });
-      map.addSource('um-jogging', { type: 'geojson', data: cur.joggingRoutes });
-      map.addSource('um-transit', { type: 'geojson', data: cur.transitGeoJson });
-      map.addSource('um-buildings', { type: 'geojson', data: cur.buildings });
-      map.addSource('um-rooms', { type: 'geojson', data: cur.rooms });
-      map.addSource('um-pois', { type: 'geojson', data: cur.context.pois });
+      map.addSource('um-boundary', { type: 'geojson', data: attachCartographicProvenance(cur.boundary) });
+      map.addSource('um-parks', { type: 'geojson', data: attachCartographicProvenance(cur.context.parks) });
+      map.addSource('um-water', { type: 'geojson', data: attachCartographicProvenance(cur.context.water) });
+      map.addSource('um-faculties', { type: 'geojson', data: attachCartographicProvenance(cur.faculties) });
+      map.addSource('um-roads', { type: 'geojson', data: attachCartographicProvenance(cur.context.roads) });
+      map.addSource('um-jogging', { type: 'geojson', data: attachCartographicProvenance(cur.joggingRoutes) });
+      map.addSource('um-transit', { type: 'geojson', data: attachCartographicProvenance(cur.transitGeoJson) });
+      map.addSource('um-buildings', { type: 'geojson', data: attachCartographicProvenance(cur.buildings) });
+      map.addSource('um-rooms', { type: 'geojson', data: attachCartographicProvenance(cur.rooms) });
+      map.addSource('um-pois', { type: 'geojson', data: attachCartographicProvenance(cur.context.pois) });
       map.addSource('um-user-area', {
         type: 'geojson',
         data: { type: 'FeatureCollection', features: [] },
@@ -1856,6 +1872,48 @@ export function UmMapCanvas(props: UmMapCanvasProps) {
           'text-halo-width': 1.8,
         },
       });
+
+      // Subtle zoom-gated cartographic mapmaker imprint anchored in open campus green margin
+      const atlasId = getAtlasIdentity();
+      map.addSource('um-carto-mark', {
+        type: 'geojson',
+        data: {
+          type: 'FeatureCollection',
+          features: [
+            {
+              type: 'Feature',
+              properties: { label: atlasId.byline },
+              geometry: { type: 'Point', coordinates: [101.65845, 3.11945] },
+            },
+          ],
+        },
+      });
+      map.addLayer({
+        id: 'um-carto-mark-label',
+        type: 'symbol',
+        source: 'um-carto-mark',
+        minzoom: 15.6,
+        layout: {
+          'text-field': ['get', 'label'],
+          'text-size': 9.2,
+          'text-font': ['Noto Sans Regular'],
+          'text-letter-spacing': 0.04,
+          'text-allow-overlap': false,
+          'text-optional': true,
+        },
+        paint: {
+          'text-color': 'rgba(60, 72, 92, 0.26)',
+          'text-halo-color': 'rgba(255, 255, 255, 0.55)',
+          'text-halo-width': 1.2,
+        },
+      });
+
+      // Baked-in WebGL custom watermark layer rendered directly into the map framebuffer
+      const wm = createWebglWatermarkLayer(cur.darkMode);
+      webglWatermarkRef.current = wm;
+      if (!map.getLayer(wm.layer.id)) {
+        map.addLayer(wm.layer);
+      }
 
       readyRef.current = true;
       // Apply persisted darkMode + current filters immediately on style load

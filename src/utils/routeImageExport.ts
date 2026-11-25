@@ -1,4 +1,9 @@
 import { computeBikeMetrics, computeWalkMetrics } from './atlasUtils';
+import {
+  embedCanvasLsbWatermark,
+  getAtlasIdentity,
+  injectPngTextChunks,
+} from './atlasProvenance';
 import type {
   ComputedRoute,
   RouteElevationProfile,
@@ -303,12 +308,13 @@ export function renderRouteCardToCanvas(
   }
   ctx.fillText(clippedTitle, innerX, titleY);
 
-  // Mode + UM 3D Atlas right-aligned subtitle
+  const atlasId = getAtlasIdentity();
+  // Mode + UM 3D Atlas creator credit right-aligned subtitle
   ctx.fillStyle = textMuted;
-  ctx.font = '500 15px Inter, -apple-system, BlinkMacSystemFont, sans-serif';
+  ctx.font = '500 14px Inter, -apple-system, BlinkMacSystemFont, sans-serif';
   ctx.textAlign = 'right';
   const stopsLabel = waypoints.length > 0 ? ` · ${waypoints.length} stop${waypoints.length > 1 ? 's' : ''}` : '';
-  ctx.fillText(`${modeTitle(route.mode)}${stopsLabel}  ·  UM 3D Atlas`, innerRight, titleY);
+  ctx.fillText(`${modeTitle(route.mode)}${stopsLabel}  ·  ${atlasId.byline}`, innerRight, titleY);
 
   // Subtle horizontal divider
   ctx.beginPath();
@@ -387,6 +393,23 @@ export function renderRouteCardToCanvas(
       lblY,
     );
   }
+
+  // Whisper-subtle canonical source micro-line tucked inside the bottom edge of the footer card
+  ctx.save();
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'bottom';
+  ctx.fillStyle = isTransparent || isDarkPalette ? 'rgba(165, 176, 194, 0.52)' : 'rgba(95, 99, 104, 0.56)';
+  ctx.font = '500 10.5px "Roboto Mono", ui-monospace, SFMono-Regular, monospace';
+  ctx.fillText(atlasId.host, innerRight, cardY + cardH - 10);
+  ctx.restore();
+
+  // Invisible LSB pixel steganography embedded inside the opaque/high-alpha footer card strip
+  embedCanvasLsbWatermark(ctx, {
+    x: padX + 20,
+    y: cardY + 8,
+    width: cardW - 40,
+    height: cardH - 16,
+  });
 }
 
 function drawNormalizedRouteSilhouette(
@@ -515,6 +538,20 @@ function drawNormalizedRouteSilhouette(
   drawPin(ctx, endPt[0], endPt[1], 'B', '#d93025', '#ffffff', '#ffffff', 17);
 }
 
+async function canvasToTaggedPngBlob(canvas: HTMLCanvasElement): Promise<Blob | null> {
+  const rawBlob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
+  if (!rawBlob) return null;
+  try {
+    const rawBytes = new Uint8Array(await rawBlob.arrayBuffer());
+    const taggedBytes = injectPngTextChunks(rawBytes);
+    const copy = new Uint8Array(taggedBytes.byteLength);
+    copy.set(taggedBytes);
+    return new Blob([copy.buffer], { type: 'image/png' });
+  } catch {
+    return rawBlob;
+  }
+}
+
 /**
  * Copies the rendered PNG canvas directly to the system clipboard.
  */
@@ -522,7 +559,7 @@ export async function copyCanvasPng(canvas: HTMLCanvasElement): Promise<boolean>
   if (typeof ClipboardItem === 'undefined' || !navigator.clipboard?.write) {
     return false;
   }
-  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
+  const blob = await canvasToTaggedPngBlob(canvas);
   if (!blob) return false;
   await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
   return true;
@@ -535,7 +572,7 @@ export async function downloadCanvasPng(
   canvas: HTMLCanvasElement,
   filename: string,
 ): Promise<boolean> {
-  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
+  const blob = await canvasToTaggedPngBlob(canvas);
   if (!blob) return false;
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');

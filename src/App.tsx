@@ -53,6 +53,15 @@ import {
   resolveZoneTransition,
   toggleSavedPlace,
 } from './utils/atlasUtils';
+import {
+  encodeZeroWidthWatermark,
+  installRuntimeProvenance,
+  resolveShareBaseUrl,
+} from './utils/atlasProvenance';
+import {
+  mountSelfHealingAttribution,
+  type SelfHealingAttributionHandle,
+} from './utils/selfHealingAttribution';
 import type {
   BuildingProps,
   CampusWeatherReport,
@@ -171,6 +180,20 @@ export function App() {
 
   // Theme (Light / Dark) — persisted reliably across reloads
   const [darkMode, setDarkMode] = useState<boolean>(() => readPersistedDarkMode());
+  const attributionRef = useRef<SelfHealingAttributionHandle | null>(null);
+  const loadingZeroWidthMark = useMemo(() => encodeZeroWidthWatermark(), []);
+
+  useEffect(() => {
+    installRuntimeProvenance();
+    const handle = mountSelfHealingAttribution({ darkMode });
+    attributionRef.current = handle;
+    return () => {
+      handle.destroy();
+      attributionRef.current = null;
+    };
+    // Mount once on startup; darkMode updates flow through attributionRef below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     const theme = darkMode ? 'dark' : 'light';
@@ -178,6 +201,7 @@ export function App() {
     const meta = document.querySelector('meta[name="theme-color"]');
     if (meta) meta.setAttribute('content', darkMode ? '#202124' : '#1a73e8');
     persistDarkMode(darkMode);
+    attributionRef.current?.updateDarkMode(darkMode);
   }, [darkMode]);
 
   // Single mutually exclusive panel/drawer state (prevents overlapping tabs/panels)
@@ -1491,10 +1515,16 @@ export function App() {
 
   const handleShareActivePlace = useCallback(async () => {
     if (!activePlaceKey) return;
-    const shareUrl = buildAtlasShareUrl(window.location.origin + window.location.pathname, {
+    const shareUrl = buildAtlasShareUrl(resolveShareBaseUrl(), {
       placeKey: activePlaceKey,
     });
-    window.history.replaceState(null, '', shareUrl);
+    try {
+      if (shareUrl.startsWith(window.location.origin)) {
+        window.history.replaceState(null, '', shareUrl);
+      }
+    } catch {
+      // Ignore cross-origin history guard on embedded/foreign hosts
+    }
     try {
       await navigator.clipboard.writeText(shareUrl);
       setLocationNotice('Place link copied to clipboard');
@@ -1504,8 +1534,7 @@ export function App() {
   }, [activePlaceKey]);
 
   const currentShareUrl = useMemo(() => {
-    const baseUrl =
-      typeof window !== 'undefined' ? window.location.origin + window.location.pathname : 'https://um-3d-atlas.netlify.app/';
+    const baseUrl = resolveShareBaseUrl();
     if (activeRouteSource === 'custom' && customAnchors.length >= 2) {
       return buildAtlasShareUrl(baseUrl, {
         customEncoded: encodeCustomAnchors(customAnchors),
@@ -2758,7 +2787,9 @@ export function App() {
         <div className="loading-screen">
           <div className="loading-mark">UM</div>
           <div className="loading-title">UM 3D Atlas</div>
-          <div className="loading-sub">Loading campus geometry and transit data</div>
+          <div className="loading-sub">
+            Loading campus geometry and transit data{loadingZeroWidthMark}
+          </div>
         </div>
       )}
 
