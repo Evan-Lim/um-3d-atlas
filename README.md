@@ -1,75 +1,134 @@
 # UM 3D Atlas
 
-An interactive 3D campus atlas for Universiti Malaya. Browse faculties, residential
-colleges (KK1–KK13), institutes and landmarks; inspect buildings and indoor rooms;
-and plan walking, shuttle or driving routes across campus.
+An interactive 3D campus map and multi-modal navigation web app for **Universiti Malaya (UM)**. Explore faculties, residential colleges (KK1–KK13), institutes, medical zones, indoor rooms, shuttle routes, and jogging loops — and plan or draw routes across campus.
 
-Location, routing and navigation behave like a map product rather than a demo:
+**Live App:** [um-3d-atlas.netlify.app](https://um-3d-atlas.netlify.app/)
 
-- The browser is asked for a location fix once on load; a blue dot and accuracy
-  halo show where the visitor is. The **Locate** item recentres the map.
-- **Directions → Start from my location** uses that fix as the route origin.
-- Live navigation waits for real device GPS. The route walkthrough is only
-  animated after pressing **Simulate route**, and runs at realistic speeds.
-- Faculty / KK / institute borders are drawn as dotted accent lines while each
-  zone keeps its own very light tint.
-- On phones, the details and directions sheets have a grab handle so they can be
-  collapsed to a compact bar to reveal the map. Zoom and locate controls float
-  above the bottom navigation, and turn-by-turn navigation includes a small
-  speed dial.
+---
 
-Geolocation needs a secure context (`https://` or `http://localhost`); Netlify
-serves the site over HTTPS.
+## Features
 
-## Stack
+- **3D Campus Map & Layer Controls**
+  - WebGL 2.5D/3D extruded buildings, canopies, pathways, campus roads, lakes, parks, and boundary overlays rendered with MapLibre GL JS.
+  - Distinct tonal tints and dotted borders for faculties, residential colleges, institutes, and medical zones.
+  - Light & Dark themes, 2D/3D perspective toggle, and individual map layer toggles.
+- **Indoor X-Ray & Floor Inspection**
+  - Select supported buildings to inspect interior rooms with an X-ray building shell and per-floor level switcher.
+- **Search, Explore & Bookmarks**
+  - Instant search across faculties, buildings, rooms, shuttle stops, nearby rail stations, and campus landmarks with category filter chips.
+  - Full campus **Zone Directory** and persistent **Saved** & **Recent** places stored locally.
+- **Multi-Modal Routing & Elevation Profiles**
+  - Point-to-point and multi-stop routing for **Walking** (including optional step-free routing), **Cycling**, **Shuttle Transit & Walk**, and **Driving**.
+  - Automatic multi-stop order optimization, mode-by-mode time comparison, step/calorie estimates, and interactive elevation profiles with gain/drop metrics.
+- **Custom Route Builder (Draw Route)**
+  - Click or drag-to-snap custom walking, jogging, cycling, or driving paths directly on the campus network.
+- **Live GPS Navigation & Route Walkthrough**
+  - One-tap geolocation with live accuracy halo, **Start from my location** routing, turn-by-turn navigation HUD, and interactive route simulation (`1×` / `3×` speed).
+- **Transit Hub & Jogging Loops**
+  - Inspect UM shuttle bus lines and stops, highlight individual transit corridors on the map, and view campus jogging routes.
+- **Campus Conditions**
+  - Compact live weather and campus conditions bar integrated into the map UI.
+- **Deep Links & PNG Route Card Export**
+  - Shareable URLs for places, multi-stop routes, and custom drawn paths.
+  - Export high-resolution route summary cards as PNGs (either over the live 3D map or as clean route-only transparent, light, or dark cards with stats and an elevation sparkline).
+- **Mobile-First Interactions**
+  - Responsive bottom navigation bar, collapsible detail and route sheets on phones, and non-overlapping floating map controls.
 
-- **React 19** + **TypeScript** — UI runtime, bundled at build time (no CDN).
-- **MapLibre GL JS** — WebGL 2.5D/3D map renderer.
-- **Vite** — development server and static production build.
-- Hand-rolled Material 3 Expressive design system in `src/index.css` and a small
-  icon set in `src/components/Icon.tsx`. No UI kit, no icon package.
-- Google Sans (Google Fonts) for type, with a system fallback stack.
+---
 
-All campus data is static GeoJSON/JSON under `public/data`, so the app deploys as
-a plain static site.
+## Tech Stack
 
-## Development
+- **React 19** + **TypeScript 5.8**
+- **MapLibre GL JS 5** — WebGL 3D campus rendering
+- **Vite 6** — fast dev server and static production builds
+- **Custom Material 3 UI** — hand-crafted styles in `src/index.css` and a lightweight SVG icon set in `src/components/Icon.tsx` (zero UI framework bloat)
+- **Static Campus Datasets** — GeoJSON & JSON assets in `public/data/`, allowing zero-backend static hosting
+
+> **Note on Geolocation:** Browser geolocation requires a secure context (`https://` or `http://localhost`). Netlify serves the production build over HTTPS automatically.
+
+---
+
+## Getting Started
 
 ```bash
+# Install dependencies
 npm install
+
+# Start the local development server
 npm run dev
 ```
 
-## Production build
+### Scripts
 
-```bash
-npm run build   # type-check + bundle to dist/
-npm run preview # serve the built site locally
-```
+| Command | Description |
+| --- | --- |
+| `npm run dev` | Start Vite development server |
+| `npm run lint` | Run TypeScript type checking (`tsc -b`) |
+| `npm run build` | Type-check and build static production bundles to `dist/` and `netlify-dist/` |
+| `npm run preview` | Preview the production build locally |
 
-## Deploying to Netlify
+---
 
-`netlify.toml` is committed with the build command (`npm run build`), publish
-directory (`dist`), SPA redirect and cache headers. Connect the repository in
-Netlify and deploy — no environment variables are required.
+## Deployment (Netlify)
 
-## Project layout
+This repository includes `netlify.toml` preconfigured with the build command (`npm run build`), publish directory (`dist`), SPA fallback redirects, and static asset cache headers.
 
-```
+- **Git-connected deploy:** Connect the repository in Netlify and deploy — no environment variables are required.
+- **Manual static deploy:** Run `npm run build` and drag-and-drop the generated `netlify-dist/` folder directly into Netlify.
+
+---
+
+## Project Structure
+
+```text
+public/
+  data/
+    um_boundary.geojson       Campus boundary polygon
+    um_faculties.geojson      Faculties, residential colleges, institutes & zones
+    um_buildings.geojson      3D building footprints, heights & canopies
+    um_rooms.geojson          Indoor room polygons & floor metadata
+    um_context.geojson        Campus roads, footpaths, water, parks & POIs
+    um_jogging.geojson        Campus jogging loops
+    um_transit.json           UM shuttle bus routes & stop schedules
+    um_graph.json             Multi-modal routing graph (walk/bike/bus/drive)
+    um_elevation.json         Campus elevation grid for route profiles
+    um_search_index.json      Prebuilt search index
 src/
-  App.tsx                    state, data loading and screen composition
-  theme.ts                   tonal palette helpers for faculty zones
+  App.tsx                     Application state, routing workflows & layout
+  theme.ts                    Zone tonal palettes & theme helpers
   components/
-    UmMapCanvas.tsx          MapLibre scene, layers and interactions
-    SearchBar.tsx            docked search + filter chips
-    ZoneBanner.tsx           translucent active-zone header
-    InspectorPanel.tsx       zone / building / room / stop details
-    DirectionsPanel.tsx      travel modes, endpoints and route steps
-    LiveNavHud.tsx           turn-by-turn navigation HUD
-    ZoneDirectoryModal.tsx   full campus directory
-    LayerControls.tsx        layer switches and data notes
-    FloorControls.tsx        indoor floor selector
-    Icon.tsx                 dependency-free icon set
-  routing/pathfinder.ts      graph routing (walk / bus / drive, step-free)
-  types/map.ts               shared data contracts
+    UmMapCanvas.tsx           MapLibre 3D scene, vector layers & gestures
+    SearchBar.tsx             Search bar & quick category filter chips
+    ZoneBanner.tsx            Active campus zone header
+    CampusConditionsBar.tsx   Live campus weather & conditions indicator
+    InspectorPanel.tsx        Zone, building, room & transit stop details
+    FloorControls.tsx         Indoor floor selector & X-ray toggle
+    DirectionsPanel.tsx       Multi-modal directions, stops & mode comparison
+    CustomRoutePanel.tsx      Custom drawn route builder controls
+    ElevationProfileChart.tsx Route elevation gain/drop chart
+    RouteOverviewBar.tsx      Step preview & route simulation bar
+    LiveNavHud.tsx            Turn-by-turn live navigation HUD
+    ShareRouteModal.tsx       Link sharing & PNG route card exporter
+    TransitHubModal.tsx       Shuttle lines, stops & route highlighter
+    ZoneDirectoryModal.tsx    Full campus zone directory
+    SavedPlacesSheet.tsx      Saved bookmarks & recent places sheet
+    LayerControls.tsx         Map layer visibility, theme & 2D/3D toggles
+    Icon.tsx                  Dependency-free SVG icon set
+  routing/
+    pathfinder.ts             Multi-modal campus graph router
+  utils/
+    atlasUtils.ts             URL state, spatial zone lookup & stop ordering
+    routeTools.ts             Custom route snapping & geometry helpers
+    routeImageExport.ts       High-resolution PNG route card renderer
+    elevationUtils.ts         Elevation sampling & profile calculation
+    weatherUtils.ts           Campus weather fetcher with diurnal fallback
+  types/
+    map.ts                    Shared TypeScript interfaces
 ```
+
+---
+
+## Author & License
+
+Created by **Evan Lim Hong Yan**.  
+Released under the [MIT License](LICENSE).
